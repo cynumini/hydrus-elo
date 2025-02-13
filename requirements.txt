@@ -1,0 +1,13 @@
+basedpyright==1.31.5
+certifi==2025.8.3
+charset-normalizer==3.4.3
+hydrus-api==5.1.1
+idna==3.10
+nodejs-wheel-binaries==22.20.0
+PySide6==6.9.2
+PySide6_Addons==6.9.2
+PySide6_Essentials==6.9.2
+requests==2.32.5
+ruff==0.13.2
+shiboken6==6.9.2
+urllib3==2.5.0
