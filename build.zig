@@ -15,16 +15,14 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    const raylib_dep = b.dependency("raylib-zig", .{
+    // raylib
+    const raylib = b.dependency("raylib", .{
         .target = target,
         .optimize = optimize,
     });
 
-    const raylib = raylib_dep.module("raylib"); // main raylib module
-    const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
-
-    exe.linkLibrary(raylib_artifact);
-    exe.root_module.addImport("raylib", raylib);
+    exe.linkLibrary(raylib.artifact("raylib"));
+    exe.linkLibC();
 
     b.installArtifact(exe);
 

@@ -1,32 +1,71 @@
-const rl = @import("raylib");
+const std = @import("std");
+const c = @cImport({
+    @cInclude("raylib.h");
+    @cInclude("raymath.h");
+});
 
-pub fn main() anyerror!void {
-    // Initialization
-    //--------------------------------------------------------------------------------------
-    const screenWidth = 800;
-    const screenHeight = 450;
+pub fn hydrusNetwork(allocator: std.mem.Allocator, result: *std.ArrayList(u8)) !void {
+    std.debug.print("I'm doing hydrus network staff!\n", .{});
+    const hydrus_client_api = std.posix.getenv("HYDRUS_CLIENT_API").?;
 
-    rl.initWindow(screenWidth, screenHeight, "hydrus-elo");
-    defer rl.closeWindow(); // Close window and OpenGL context
+    var client: std.http.Client = .{ .allocator = allocator };
+    defer client.deinit();
 
-    rl.setTargetFPS(60); // Set our game to run at 60 frames-per-second
-    //--------------------------------------------------------------------------------------
+    _ = try client.fetch(.{
+        .location = .{ .url = "http://127.0.0.1:45869/api_version" },
+        .extra_headers = &.{
+            .{
+                .name = "Hydrus-Client-API-Access-Key",
+                .value = hydrus_client_api,
+            },
+        },
+        .response_storage = .{ .dynamic = result },
+    });
 
-    // Main game loop
-    while (!rl.windowShouldClose()) { // Detect window close button or ESC key
+    std.debug.print("Api key: {s}\n", .{hydrus_client_api});
+    std.debug.print("I have done!\n", .{});
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) std.testing.expect(false) catch @panic("TEST FAIL");
+    }
+
+    var result = std.ArrayList(u8).init(allocator);
+    defer result.deinit();
+
+    var thread = try std.Thread.spawn(
+        .{},
+        hydrusNetwork,
+        .{ allocator, &result },
+    );
+    defer thread.join();
+
+    const screen_width = 800;
+    const screen_height = 450;
+
+    c.InitWindow(screen_width, screen_height, "hydrus-elo");
+    defer c.CloseWindow();
+
+    c.SetTargetFPS(60);
+
+    while (!c.WindowShouldClose()) {
         // Update
-        //----------------------------------------------------------------------------------
-        // TODO: Update your variables here
-        //----------------------------------------------------------------------------------
+        std.debug.print("{s}\n", .{result.items});
 
         // Draw
-        //----------------------------------------------------------------------------------
-        rl.beginDrawing();
-        defer rl.endDrawing();
-
-        rl.clearBackground(rl.Color.white);
-
-        rl.drawText("Congrats! You created your first window!", 190, 200, 20, rl.Color.light_gray);
-        //----------------------------------------------------------------------------------
+        c.BeginDrawing();
+        c.ClearBackground(c.WHITE);
+        c.DrawText(
+            "Congrats! You created your first window!",
+            190,
+            200,
+            20,
+            c.LIGHTGRAY,
+        );
+        c.EndDrawing();
     }
 }
