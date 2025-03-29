@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+
     const optimize = b.standardOptimizeOption(.{});
 
     const exe_mod = b.createModule(.{
@@ -15,14 +16,12 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    // raylib
-    const raylib = b.dependency("raylib", .{
+    const sakana = b.dependency("sakana", .{
         .target = target,
         .optimize = optimize,
     });
 
-    exe.linkLibrary(raylib.artifact("raylib"));
-    exe.linkLibC();
+    exe.root_module.addImport("sakana", sakana.module("sakana"));
 
     b.installArtifact(exe);
 

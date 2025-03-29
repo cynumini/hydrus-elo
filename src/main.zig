@@ -1,71 +1,47 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("raylib.h");
-    @cInclude("raymath.h");
-});
 
-pub fn hydrusNetwork(allocator: std.mem.Allocator, result: *std.ArrayList(u8)) !void {
-    std.debug.print("I'm doing hydrus network staff!\n", .{});
-    const hydrus_client_api = std.posix.getenv("HYDRUS_CLIENT_API").?;
+const Hydrus = @import("hydrus.zig");
+const File = @import("file.zig");
+const Sakana = @import("sakana");
+const Color = Sakana.Color;
 
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
-    _ = try client.fetch(.{
-        .location = .{ .url = "http://127.0.0.1:45869/api_version" },
-        .extra_headers = &.{
-            .{
-                .name = "Hydrus-Client-API-Access-Key",
-                .value = hydrus_client_api,
-            },
-        },
-        .response_storage = .{ .dynamic = result },
-    });
-
-    std.debug.print("Api key: {s}\n", .{hydrus_client_api});
-    std.debug.print("I have done!\n", .{});
-}
+const queue_len = 64;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) std.testing.expect(false) catch @panic("TEST FAIL");
-    }
-
-    var result = std.ArrayList(u8).init(allocator);
-    defer result.deinit();
-
-    var thread = try std.Thread.spawn(
-        .{},
-        hydrusNetwork,
-        .{ allocator, &result },
-    );
-    defer thread.join();
+    var debug_allocator = std.heap.DebugAllocator(.{}){};
+    defer _ = debug_allocator.deinit();
+    const allocator = debug_allocator.allocator();
+    _ = allocator;
 
     const screen_width = 800;
-    const screen_height = 450;
+    const screen_height = 600;
 
-    c.InitWindow(screen_width, screen_height, "hydrus-elo");
-    defer c.CloseWindow();
+    var sakana = try Sakana.init(screen_width, screen_height, "hydrus-elo");
+    defer sakana.deinit();
 
-    c.SetTargetFPS(60);
-
-    while (!c.WindowShouldClose()) {
-        // Update
-        std.debug.print("{s}\n", .{result.items});
-
-        // Draw
-        c.BeginDrawing();
-        c.ClearBackground(c.WHITE);
-        c.DrawText(
-            "Congrats! You created your first window!",
-            190,
-            200,
-            20,
-            c.LIGHTGRAY,
-        );
-        c.EndDrawing();
+    while (!sakana.shouldClose()) {
+        Sakana.beginDrawing();
+        Sakana.clearColor(Color.init(42, 46, 50, 255));
+        sakana.endDrawing();
     }
+
+    // const std_out = std.io.getStdOut().writer();
+
+    // var hydrus = try Hydrus.init(allocator);
+    // defer hydrus.deinit();
+    //
+    // var a = File{ .id = 23660, .elo = 1000, .hydrus = &hydrus };
+    // var b = File{ .id = 23658, .elo = 1000, .hydrus = &hydrus };
+    //
+    // try a.play(&b, 0.5);
+
+    // const result_a = try hydrus.searchFiles();
+    // defer allocator.free(result_a);
+    //
+    // const result_b = try hydrus.getFilesElo(result_a);
+    // defer allocator.free(result_b);
+    //
+    // _ = try std_out.print("{any}", .{result_b});
+    //
+    // _ = try hydrus.setElo(23660, 1000);
 }
