@@ -6,24 +6,26 @@ const Sakana = @import("sakana");
 const Color = Sakana.Color;
 
 const queue_len = 64;
+var x: f32 = 0;
+
+pub fn update() !void {
+    Sakana.clearColor(Color.init(42, 46, 50, 255));
+    Sakana.drawRectangle(.{ x, 32 }, .{32, 32 }, Color.white);
+    x += 0.5;
+}
 
 pub fn main() !void {
     var debug_allocator = std.heap.DebugAllocator(.{}){};
     defer _ = debug_allocator.deinit();
     const allocator = debug_allocator.allocator();
-    _ = allocator;
 
-    const screen_width = 800;
-    const screen_height = 600;
+    // const std_out = std.io.getStdOut().writer();
+    const std_err = std.io.getStdErr().writer();
 
-    var sakana = try Sakana.init(screen_width, screen_height, "hydrus-elo");
+    var sakana = try Sakana.init(allocator, std_err, .{ 800, 600 }, "hydrus-elo");
     defer sakana.deinit();
 
-    while (!sakana.shouldClose()) {
-        Sakana.beginDrawing();
-        Sakana.clearColor(Color.init(42, 46, 50, 255));
-        sakana.endDrawing();
-    }
+    try sakana.run(update);
 
     // const std_out = std.io.getStdOut().writer();
 
