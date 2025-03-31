@@ -9,8 +9,8 @@ const queue_len = 64;
 var x: f32 = 0;
 
 pub fn update() !void {
-    Sakana.clearColor(Color.init(42, 46, 50, 255));
-    Sakana.drawRectangle(.{ x, 32 }, .{32, 32 }, Color.white);
+    Sakana.clear();
+    Sakana.drawRectangle(.{ x, 32 }, .{ 32, 32 }, Color.white);
     x += 0.5;
 }
 
@@ -19,12 +19,12 @@ pub fn main() !void {
     defer _ = debug_allocator.deinit();
     const allocator = debug_allocator.allocator();
 
-    // const std_out = std.io.getStdOut().writer();
-    const std_err = std.io.getStdErr().writer();
+    var sakana = try Sakana.init(allocator, .{
+        .title = "hydrus-elo",
+        .clear_color = .{ .r = 42, .g = 46, .b = 50, .a = 255 },
+    });
 
-    var sakana = try Sakana.init(allocator, std_err, .{ 800, 600 }, "hydrus-elo");
     defer sakana.deinit();
-
     try sakana.run(update);
 
     // const std_out = std.io.getStdOut().writer();
