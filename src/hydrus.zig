@@ -1,4 +1,6 @@
 const std = @import("std");
+const Sakana = @import("sakana");
+const Vector2 = Sakana.Vector2;
 
 const Self = @This();
 
@@ -80,7 +82,7 @@ pub fn searchFiles(self: *Self) ![]u32 {
 
     try query.appendSlice("file_sort_type=4");
     try query.appendSlice("&tags=");
-    _ = try std.Uri.Component.percentEncode(query.writer(), "[\"system:limit is 64\"]", isUnreserved);
+    _ = try std.Uri.Component.percentEncode(query.writer(), "[\"system:limit is 64\", \"system:filetype is image\"]", isUnreserved);
 
     const T = struct {
         file_ids: []u32,
@@ -98,21 +100,29 @@ pub fn searchFiles(self: *Self) ![]u32 {
 }
 
 /// The caller owns the returned memory.
-pub fn render(self: *Self, id: u32) ![]const u8 {
+pub fn render(self: *Self, id: u32, size: Vector2) ![]const u8 {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
-    try query.writer().print("file_id={}", .{id});
+    const width: i32 = @intFromFloat(@round(size.x));
+    const height: i32 = @intFromFloat(@round(size.y));
+    try query.writer().print("width={}&height={}&file_id={}&render_format=1", .{ width, height, id });
 
     return self.get("/get_files/render", query.items);
 }
 
+pub const File = struct {
+    id: u32,
+    elo: u32,
+    size: Vector2,
+};
+
 /// The caller owns the returned memory.
-pub fn getFilesElo(self: *Self, ids: []u32) ![]u32 {
+pub fn getFiles(self: *Self, ids: []u32) ![]File {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
-    var elo = std.ArrayList(u32).init(self.allocator);
+    var files = std.ArrayList(File).init(self.allocator);
 
     try query.append('[');
 
@@ -136,10 +146,18 @@ pub fn getFilesElo(self: *Self, ids: []u32) ![]u32 {
     defer json.deinit();
 
     for (json.value.object.get("metadata").?.array.items) |metadata| {
-        try elo.append(@intCast(metadata.object.get("ratings").?.object.get(self.elo_service_key.?).?.integer));
+        const file: File = .{
+            .id = @intCast(metadata.object.get("file_id").?.integer),
+            .elo = @intCast(metadata.object.get("ratings").?.object.get(self.elo_service_key.?).?.integer),
+            .size = .{
+                .x = @floatFromInt(metadata.object.get("width").?.integer),
+                .y = @floatFromInt(metadata.object.get("height").?.integer),
+            },
+        };
+        try files.append(file);
     }
 
-    return elo.toOwnedSlice();
+    return files.toOwnedSlice();
 }
 
 /// The caller owns the returned memory.

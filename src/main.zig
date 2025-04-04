@@ -1,23 +1,88 @@
 const std = @import("std");
 
-const Hydrus = @import("hydrus.zig");
 const File = @import("file.zig");
+const Hydrus = @import("hydrus.zig");
 const Sakana = @import("sakana");
+const Input = Sakana.Input;
+const Action = Input.Action;
 const Color = Sakana.Color;
-const Texture = @import("sakana").Texture;
+const Image = Sakana.Image;
+const Key = Input.Key;
+const Mods = Input.Mods;
+const Texture = Sakana.Texture;
+const Vector2 = Sakana.Vector2;
 
 const queue_len = 64;
-var texture: Texture = undefined;
-var texture1: Texture = undefined;
-var x: f32 = 0;
+var texture_left: ?Texture = undefined;
+var texture_right: ?Texture = undefined;
+var screen = Vector2.init(1280, 720);
+var textures: std.ArrayList(?Texture) = undefined;
+var images: std.ArrayList(Image) = undefined;
+var files: []Hydrus.File = undefined;
+var index: usize = 2;
+var end = false;
+
+pub fn calcOffset(left: Vector2, right: Vector2) f32 {
+    const scaled_left = left.scaleTo(screen);
+    const scaled_right = right.scaleTo(screen);
+    const left_scale = scaled_left.x / (scaled_left.x + scaled_right.x);
+    return left_scale * screen.x;
+}
 
 pub fn update() !void {
     Sakana.clear();
-    try Sakana.drawRectangle(.{ x, 32 }, .{ 32, 32 }, Color.black);
-    try Sakana.drawRectangle(.{ x * 1.5, 128 }, .{ 32, 32 }, Color.red);
-    try Sakana.drawTexture(.{ 0, 0 }, texture.size / @as(@Vector(2, f32), @splat(2)), texture);
-    try Sakana.drawTexture(.{ 512, 0 }, texture1.size / @as(@Vector(2, f32), @splat(2)), texture1);
-    x += 0.5;
+    // Keep it until program fully works
+    if (images.items.len != 0) {
+        var image = images.pop().?;
+        defer image.deinit();
+        try textures.append(try Texture.initFromImage(image));
+        if (textures.items.len == 2) {
+            texture_left = textures.items[0];
+            texture_right = textures.items[1];
+        }
+    }
+    if (texture_left != null and texture_right != null) {
+        const x_offset = calcOffset(texture_left.?.size, texture_right.?.size);
+        try Sakana.drawTexture(texture_left.?, Vector2.init(0, 0), Vector2.init(x_offset, screen.y), .keep);
+        try Sakana.drawTexture(texture_right.?, Vector2.init(x_offset, 0), Vector2.init(screen.x - x_offset, screen.y), .keep);
+    }
+    var value: f32 = @floatFromInt(index);
+    value /= queue_len;
+    try Sakana.drawRectangle(
+        Vector2.init(0, 0),
+        Vector2.init(value * screen.x, 4),
+        Color{ .r = 0, .g = 255, .b = 0, .a = 180 },
+    );
+}
+
+pub fn resize(size: Vector2) void {
+    screen = size;
+}
+
+pub fn key_callback(key: Key, action: Action, mods: Mods) void {
+    _ = mods;
+    if (key == .space and action == .release) {
+        if (textures.items.len >= index + 2) {
+            texture_left = textures.items[index];
+            texture_right = textures.items[index + 1];
+            index += 2;
+            std.debug.print("index =  {}\n", .{index});
+        } else if (index == 64) {
+            Sakana.exit();
+        }
+    }
+}
+
+pub fn loadImages(allocator: std.mem.Allocator, hydrus: *Hydrus) !void {
+    for (0.., files) |i, file| {
+        if (end) {
+            return;
+        }
+        const size = if (file.size.x > 1920 or file.size.y > 1080) file.size.scaleTo(Vector2.init(1920, 1080)) else file.size;
+        const image = try hydrus.render(files[i].id, size);
+        defer allocator.free(image);
+        try images.append(try Image.init(image, .memory));
+    }
 }
 
 pub fn main() !void {
@@ -28,41 +93,38 @@ pub fn main() !void {
     var hydrus = try Hydrus.init(allocator);
     defer hydrus.deinit();
 
-    const files = try hydrus.searchFiles();
-    defer allocator.free(files);
-
-    const file = try hydrus.render(files[0]);
-    defer allocator.free(file);
-
-    const file2 = try hydrus.render(files[1]);
-    defer allocator.free(file2);
-
-    var sakana = try Sakana.init(allocator, .{
+    try Sakana.init(allocator, .{
         .title = "hydrus-elo",
         .clear_color = .{ .r = 42, .g = 46, .b = 50, .a = 255 },
+        .resize_callback = &resize,
+        .key_callback = &key_callback,
+        .size = screen,
     });
-    defer sakana.deinit();
+    defer Sakana.deinit();
 
-    texture = try Texture.initFromMemory(file);
-    defer texture.deinit();
-    texture1 = try Texture.initFromMemory(file2);
-    defer texture.deinit();
+    const ids = try hydrus.searchFiles();
+    defer allocator.free(ids);
 
-    try sakana.run(update);
+    files = try hydrus.getFiles(ids);
+    defer allocator.free(files);
 
-    // const std_out = std.io.getStdOut().writer();
+    images = .init(allocator);
+    defer {
+        while (images.pop()) |*image| {
+            @constCast(image).deinit();
+        }
+        images.deinit();
+    }
 
-    //
-    // var a = File{ .id = 23660, .elo = 1000, .hydrus = &hydrus };
-    // var b = File{ .id = 23658, .elo = 1000, .hydrus = &hydrus };
-    //
-    // try a.play(&b, 0.5);
+    textures = .init(allocator);
+    defer {
+        for (textures.items) |texture| texture.?.deinit();
+        textures.deinit();
+    }
 
-    //
-    // const result_b = try hydrus.getFilesElo(result_a);
-    // defer allocator.free(result_b);
-    //
-    // _ = try std_out.print("{any}", .{result_b});
-    //
-    // _ = try hydrus.setElo(23660, 1000);
+    var thread = try std.Thread.spawn(.{}, loadImages, .{ allocator, &hydrus });
+    defer thread.join();
+
+    try Sakana.run(update);
+    end = true;
 }
