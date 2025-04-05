@@ -1,6 +1,8 @@
 const std = @import("std");
-const Sakana = @import("sakana");
-const Vector2 = Sakana.Vector2;
+
+const skn = @import("sakana");
+
+const File = @import("file.zig");
 
 const Self = @This();
 
@@ -76,13 +78,15 @@ pub fn post(self: *Self, path: []const u8, data: []const u8) ![]const u8 {
 }
 
 /// The caller owns the returned memory.
-pub fn searchFiles(self: *Self) ![]u32 {
+fn searchFiles(self: *Self, len: usize) ![]u32 {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
     try query.appendSlice("file_sort_type=4");
     try query.appendSlice("&tags=");
-    _ = try std.Uri.Component.percentEncode(query.writer(), "[\"system:limit is 64\", \"system:filetype is image\"]", isUnreserved);
+    _ = try std.Uri.Component.percentEncode(query.writer(), "[\"system:limit is ", isUnreserved);
+    try query.writer().print("{}", .{len});
+    _ = try std.Uri.Component.percentEncode(query.writer(), "\", \"system:filetype is image\"]", isUnreserved);
 
     const T = struct {
         file_ids: []u32,
@@ -100,7 +104,7 @@ pub fn searchFiles(self: *Self) ![]u32 {
 }
 
 /// The caller owns the returned memory.
-pub fn render(self: *Self, id: u32, size: Vector2) ![]const u8 {
+pub fn render(self: *Self, id: u32, size: skn.Vector2) ![]const u8 {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
@@ -111,14 +115,11 @@ pub fn render(self: *Self, id: u32, size: Vector2) ![]const u8 {
     return self.get("/get_files/render", query.items);
 }
 
-pub const File = struct {
-    id: u32,
-    elo: u32,
-    size: Vector2,
-};
-
 /// The caller owns the returned memory.
-pub fn getFiles(self: *Self, ids: []u32) ![]File {
+pub fn getFiles(self: *Self, len: usize) ![]File {
+    const ids = try self.searchFiles(len);
+    defer self.allocator.free(ids);
+
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
@@ -146,7 +147,7 @@ pub fn getFiles(self: *Self, ids: []u32) ![]File {
     defer json.deinit();
 
     for (json.value.object.get("metadata").?.array.items) |metadata| {
-        const file: File = .{
+        var file: File = .{
             .id = @intCast(metadata.object.get("file_id").?.integer),
             .elo = @intCast(metadata.object.get("ratings").?.object.get(self.elo_service_key.?).?.integer),
             .size = .{
@@ -154,6 +155,9 @@ pub fn getFiles(self: *Self, ids: []u32) ![]File {
                 .y = @floatFromInt(metadata.object.get("height").?.integer),
             },
         };
+        if (file.elo == 0) {
+            file.elo = 1000;
+        }
         try files.append(file);
     }
 
@@ -161,7 +165,7 @@ pub fn getFiles(self: *Self, ids: []u32) ![]File {
 }
 
 /// The caller owns the returned memory.
-pub fn setElo(self: *Self, id: u32, elo: u32) !void {
+pub fn setElo(self: *Self, id: u32, elo: i32) !void {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
