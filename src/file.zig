@@ -31,7 +31,7 @@ pub fn loadImage(self: *Self, allocator: std.mem.Allocator, hydrus: *Hydrus) !vo
 
     const data = try hydrus.render(self.id, size);
     defer allocator.free(data);
-    self.image = try skn.Image.init(data, .memory);
+    self.image = try skn.Image.init(data, .memory, .jpeg);
 }
 
 pub fn loadTexture(self: *Self) !void {

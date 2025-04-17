@@ -2,15 +2,14 @@ const std = @import("std");
 
 const File = @import("file.zig");
 const Hydrus = @import("hydrus.zig");
-const Sakana = @import("sakana");
-const Input = Sakana.Input;
-const Action = Input.Action;
-const Color = Sakana.Color;
-const Image = Sakana.Image;
-const Key = Input.Key;
-const Mods = Input.Mods;
-const Texture = Sakana.Texture;
-const Vector2 = Sakana.Vector2;
+const skn = @import("sakana");
+const Action = skn.Action;
+const Color = skn.Color;
+const Image = skn.Image;
+const Key = skn.Key;
+const Mods = skn.Mods;
+const Texture = skn.Texture;
+const Vector2 = skn.Vector2;
 
 var queue_len: usize = 5;
 var screen = Vector2.init(1280, 720);
@@ -32,21 +31,25 @@ pub fn calcOffset(left: Vector2, right: Vector2) f32 {
 }
 
 pub fn update() !void {
-    Sakana.clear();
+    try input();
     while (files_with_image.pop()) |file| {
         try file.loadTexture();
         try queue.append(file);
     }
+}
+
+pub fn draw() !void {
+    skn.clear();
     if (queue.items.len >= 2 and nextIsPossibe()) {
         const left_file = queue.items[index];
         const right_file = queue.items[index + 1];
         const x_offset = calcOffset(left_file.texture.?.size, right_file.texture.?.size);
-        try Sakana.drawTexture(left_file.texture.?, Vector2.init(0, 0), Vector2.init(x_offset, screen.y), .keep);
-        try Sakana.drawTexture(right_file.texture.?, Vector2.init(x_offset, 0), Vector2.init(screen.x - x_offset, screen.y), .keep);
+        try skn.drawTexture(left_file.texture.?, Vector2.init(0, 0), Vector2.init(x_offset, screen.y), .keep);
+        try skn.drawTexture(right_file.texture.?, Vector2.init(x_offset, 0), Vector2.init(screen.x - x_offset, screen.y), .keep);
     }
-    var value: f32 = @floatFromInt(index);
+    var value: f32 = @floatFromInt(index + 1);
     value /= @floatFromInt(queue.items.len);
-    try Sakana.drawRectangle(
+    try skn.drawRectangle(
         Vector2.init(0, 0),
         Vector2.init(value * screen.x, 4),
         Color{ .r = 0, .g = 255, .b = 0, .a = 180 },
@@ -68,7 +71,7 @@ pub fn next() !void {
         try next_queue.append(queue.swapRemove(queue_len));
     }
     if (index == queue_len) {
-        if (next_queue.items.len < 2) Sakana.exit();
+        if (next_queue.items.len < 2) skn.exit();
         try queue.resize(0);
         try queue.appendSlice(next_queue.items);
         std.Random.shuffle(rand, *File, queue.items);
@@ -94,21 +97,20 @@ pub fn play(result: f32) !void {
     try next();
 }
 
-pub fn input(key: Key, action: Action, mods: Mods) !void {
-    _ = mods;
-    if (key == .a and action == .release) {
+pub fn input() !void {
+    if (skn.isKeyReleased(.a)) {
         if (!nextIsPossibe()) return;
         try play(1);
     }
-    if (key == .d and action == .release) {
+    if (skn.isKeyReleased(.d)) {
         if (!nextIsPossibe()) return;
         try play(0);
     }
-    if (key == .w and action == .release) {
+    if (skn.isKeyReleased(.w)) {
         if (!nextIsPossibe()) return;
         try play(0.5);
     }
-    if (key == .s and action == .release) {
+    if (skn.isKeyReleased(.s)) {
         if (!nextIsPossibe()) return;
         try next();
     }
@@ -146,14 +148,13 @@ pub fn main() !void {
     hydrus = try Hydrus.init(allocator);
     defer hydrus.deinit();
 
-    try Sakana.init(allocator, .{
+    try skn.init(allocator, .{
         .title = "hydrus-elo",
         .clear_color = .{ .r = 42, .g = 46, .b = 50, .a = 255 },
         .resize_callback = &resize,
-        .input_callback = &input,
         .size = screen,
     });
-    defer Sakana.deinit();
+    defer skn.deinit();
 
     files = try hydrus.getFiles(queue_len);
     defer {
@@ -189,6 +190,6 @@ pub fn main() !void {
     });
     defer thread.join();
 
-    try Sakana.run(update);
+    try skn.run(update, draw);
     end = true;
 }
