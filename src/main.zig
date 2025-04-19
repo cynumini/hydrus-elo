@@ -3,124 +3,190 @@ const std = @import("std");
 const File = @import("file.zig");
 const Hydrus = @import("hydrus.zig");
 const skn = @import("sakana");
-const Action = skn.Action;
-const Color = skn.Color;
-const Image = skn.Image;
-const Key = skn.Key;
-const Mods = skn.Mods;
-const Texture = skn.Texture;
-const Vector2 = skn.Vector2;
 
-var queue_len: usize = 5;
-var screen = Vector2.init(1280, 720);
-var files: []File = undefined;
-var files_with_nothing: std.ArrayList(*File) = undefined;
-var files_with_image: std.ArrayList(*File) = undefined;
-var queue: std.ArrayList(*File) = undefined;
-var next_queue: std.ArrayList(*File) = undefined;
-var index: usize = 0;
-var end = false;
-var hydrus: Hydrus = undefined;
-var rand: std.Random = undefined;
+const GameState = struct {
+    const Self = @This();
 
-pub fn calcOffset(left: Vector2, right: Vector2) f32 {
-    const scaled_left = left.scaleTo(screen);
-    const scaled_right = right.scaleTo(screen);
-    const left_scale = scaled_left.x / (scaled_left.x + scaled_right.x);
-    return left_scale * screen.x;
+    max_monitor_size: skn.Vector2,
+    rand: std.Random,
+    hydrus: *Hydrus,
+    files: []File,
+    queue: std.ArrayList(*File),
+    next_queue: std.ArrayList(*File),
+    allocator: std.mem.Allocator,
+    screen: skn.Vector2,
+    should_run: bool = true,
+
+    pub fn init(allocator: std.mem.Allocator, screen: skn.Vector2) !Self {
+        const args = try std.process.argsAlloc(allocator);
+        defer std.process.argsFree(allocator, args);
+
+        var queue_len: usize = undefined;
+
+        if (args.len < 2) {
+            std.debug.print("Specify the queue length as the first argument.\n", .{});
+            return error.NoQueueLen;
+        } else {
+            queue_len = try std.fmt.parseInt(usize, args[1], 0);
+            if (queue_len < 2) {
+                std.debug.print("Queue length must be greater than 1.\n", .{});
+                return error.QueueTooSmall;
+            }
+        }
+
+        var hydrus = try allocator.create(Hydrus);
+        hydrus.* = try Hydrus.init(allocator);
+        const files = try hydrus.getFiles(queue_len);
+
+        std.debug.assert(files.len > 1);
+
+        var queue = std.ArrayList(*File).init(allocator);
+        for (files) |*file| {
+            try queue.append(file);
+        }
+
+        var next_queue = std.ArrayList(*File).init(allocator);
+        if (queue.items.len % 2 != 0) {
+            try next_queue.append(queue.pop().?);
+        }
+
+        return .{
+            .max_monitor_size = skn.getMaxMonitorSize(),
+            .rand = std.crypto.random,
+            .hydrus = hydrus,
+            .files = files,
+            .allocator = allocator,
+            .screen = screen,
+            .queue = queue,
+            .next_queue = next_queue,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        defer self.allocator.destroy(self.hydrus);
+        defer self.hydrus.deinit();
+        defer {
+            for (self.files) |*file| {
+                file.deinit();
+            }
+            self.allocator.free(self.files);
+        }
+        defer self.queue.deinit();
+        defer self.next_queue.deinit();
+    }
+};
+
+var gs: GameState = undefined;
+
+pub fn play(result: f32) !void {
+    const left_file = gs.queue.orderedRemove(0);
+    const right_file = gs.queue.orderedRemove(0);
+    if (result == 1) {
+        try gs.next_queue.append(left_file);
+    } else if (result == 0) {
+        try gs.next_queue.append(right_file);
+    } else if (result == 0.5) {
+        try gs.next_queue.append(left_file);
+        try gs.next_queue.append(right_file);
+    }
+
+    if (result != -1) {
+        try left_file.play(right_file, result);
+    }
+
+    if (gs.queue.items.len < 2) {
+        if (gs.queue.items.len > 0) {
+            try gs.next_queue.appendSlice(gs.queue.items);
+            try gs.queue.resize(0);
+        }
+        if (gs.next_queue.items.len < 2) skn.exit();
+        try gs.queue.appendSlice(gs.next_queue.items);
+        std.Random.shuffle(gs.rand, *File, gs.queue.items);
+        try gs.next_queue.resize(0);
+
+        if (gs.queue.items.len % 2 != 0) {
+            try gs.next_queue.append(gs.queue.swapRemove(0));
+        }
+    }
 }
 
 pub fn update() !void {
-    try input();
-    while (files_with_image.pop()) |file| {
-        try file.loadTexture();
-        try queue.append(file);
-    }
-}
-
-pub fn draw() !void {
-    skn.clear();
-    if (queue.items.len >= 2 and nextIsPossibe()) {
-        const left_file = queue.items[index];
-        const right_file = queue.items[index + 1];
-        const x_offset = calcOffset(left_file.texture.?.size, right_file.texture.?.size);
-        try skn.drawTexture(left_file.texture.?, Vector2.init(0, 0), Vector2.init(x_offset, screen.y), .keep);
-        try skn.drawTexture(right_file.texture.?, Vector2.init(x_offset, 0), Vector2.init(screen.x - x_offset, screen.y), .keep);
-    }
-    var value: f32 = @floatFromInt(index + 1);
-    value /= @floatFromInt(queue.items.len);
-    try skn.drawRectangle(
-        Vector2.init(0, 0),
-        Vector2.init(value * screen.x, 4),
-        Color{ .r = 0, .g = 255, .b = 0, .a = 180 },
-    );
-}
-
-pub fn resize(size: Vector2) void {
-    screen = size;
-}
-
-pub fn nextIsPossibe() bool {
-    return queue.items.len >= index + 2;
-}
-
-pub fn next() !void {
-    index += 2;
-    if (queue_len % 2 != 0) {
-        queue_len -= 1;
-        try next_queue.append(queue.swapRemove(queue_len));
-    }
-    if (index == queue_len) {
-        if (next_queue.items.len < 2) skn.exit();
-        try queue.resize(0);
-        try queue.appendSlice(next_queue.items);
-        std.Random.shuffle(rand, *File, queue.items);
-        try next_queue.resize(0);
-        queue_len = queue.items.len;
-        index = 0;
-    }
-}
-
-pub fn play(result: f32) !void {
-    var left_file = queue.items[index];
-    const right_file = queue.items[index + 1];
-    if (result == 1) {
-        try next_queue.append(left_file);
-    } else if (result == 0) {
-        try next_queue.append(right_file);
-    } else if (result == 0.5) {
-        try next_queue.append(left_file);
-        try next_queue.append(right_file);
-    } else unreachable;
-
-    try left_file.play(&hydrus, right_file, result);
-    try next();
-}
-
-pub fn input() !void {
     if (skn.isKeyReleased(.a)) {
-        if (!nextIsPossibe()) return;
         try play(1);
     }
     if (skn.isKeyReleased(.d)) {
-        if (!nextIsPossibe()) return;
         try play(0);
     }
     if (skn.isKeyReleased(.w)) {
-        if (!nextIsPossibe()) return;
         try play(0.5);
     }
     if (skn.isKeyReleased(.s)) {
-        if (!nextIsPossibe()) return;
-        try next();
+        try play(-1);
+    }
+    for (gs.files) |*file| if (file.image != null) try file.loadTexture();
+}
+
+pub fn draw() !void {
+    const left = if (gs.queue.items.len > 0) gs.queue.items[0] else null;
+    const right = if (gs.queue.items.len > 1) gs.queue.items[1] else null;
+
+    if (left != null and right != null and left.?.texture != null and right.?.texture != null) {
+        const left_texture = left.?.texture.?;
+        const right_texture = right.?.texture.?;
+
+        var left_scaled_size = left_texture.size;
+        var right_scaled_size = right_texture.size;
+
+        const max_height = @max(left_scaled_size.y, right_scaled_size.y);
+
+        left_scaled_size = left_scaled_size.scale(max_height / left_scaled_size.y);
+        right_scaled_size = right_scaled_size.scale(max_height / right_scaled_size.y);
+
+        const coefficient = left_scaled_size.x / (left_scaled_size.x + right_scaled_size.x);
+
+        left_scaled_size = left_scaled_size.scaleTo(.init(gs.screen.x * coefficient, gs.screen.y));
+        right_scaled_size = right_scaled_size.scaleTo(.init(gs.screen.x * (1 - coefficient), gs.screen.y));
+
+        const x_padding = (gs.screen.x - (left_scaled_size.x + right_scaled_size.x)) / 3;
+        const y_padding = (gs.screen.y - left_scaled_size.y) / 2;
+
+        skn.drawTexture(
+            left_texture,
+            .init(x_padding, y_padding),
+            left_scaled_size.x / left_texture.size.x,
+        );
+        skn.drawTexture(
+            right_texture,
+            .init(x_padding * 2 + left_scaled_size.x, y_padding),
+            right_scaled_size.x / right_texture.size.x,
+        );
+
+        const left_text = try std.fmt.allocPrint(gs.allocator, "Elo: {}", .{left.?.elo});
+        defer gs.allocator.free(left_text);
+        skn.drawText(left_text, .init(0, 0), 20, skn.Color.red);
+
+        const right_text = try std.fmt.allocPrint(gs.allocator, "Elo: {}", .{right.?.elo});
+        const right_text_width: f32 = @floatFromInt(skn.measureText(right_text, 20));
+        defer gs.allocator.free(right_text);
+        skn.drawText(right_text, .init(gs.screen.x - right_text_width, 0), 20, skn.Color.red);
+
+        const progress = try std.fmt.allocPrint(gs.allocator, "Queue: {}, Next queue: {}", .{
+            gs.queue.items.len,
+            gs.next_queue.items.len,
+        });
+        defer gs.allocator.free(progress);
+        skn.drawText(progress, .init(0, gs.screen.y - 20), 20, skn.Color.red);
     }
 }
 
+pub fn resize(size: skn.Vector2) void {
+    gs.screen = size;
+}
+
 pub fn loadImages(allocator: std.mem.Allocator) !void {
-    while (files_with_nothing.pop()) |file| {
-        try file.loadImage(allocator, &hydrus);
-        try files_with_image.append(file);
-        if (end) return;
+    for (gs.files) |*file| {
+        try file.loadImage(allocator, gs.max_monitor_size);
+        if (!gs.should_run) return;
     }
 }
 
@@ -129,24 +195,7 @@ pub fn main() !void {
     defer _ = debug_allocator.deinit();
     const allocator = debug_allocator.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    rand = std.crypto.random;
-
-    if (args.len < 2) {
-        std.debug.print("Specify the queue length as the first argument.\n", .{});
-        return;
-    } else {
-        queue_len = try std.fmt.parseInt(usize, args[1], 0);
-        if (queue_len < 2) {
-            std.debug.print("Queue length must be greater than 1.\n", .{});
-            return;
-        }
-    }
-
-    hydrus = try Hydrus.init(allocator);
-    defer hydrus.deinit();
+    const screen = skn.Vector2.init(1280, 720);
 
     try skn.init(allocator, .{
         .title = "hydrus-elo",
@@ -156,34 +205,8 @@ pub fn main() !void {
     });
     defer skn.deinit();
 
-    files = try hydrus.getFiles(queue_len);
-    defer {
-        for (files) |*file| {
-            if (file.image) |*image| {
-                image.deinit();
-            }
-            if (file.texture) |*texture| {
-                texture.deinit();
-            }
-        }
-        allocator.free(files);
-    }
-
-    files_with_nothing = .init(allocator);
-    defer files_with_nothing.deinit();
-
-    for (files) |*file| {
-        try files_with_nothing.append(file);
-    }
-
-    files_with_image = .init(allocator);
-    defer files_with_image.deinit();
-
-    queue = .init(allocator);
-    defer queue.deinit();
-
-    next_queue = .init(allocator);
-    defer next_queue.deinit();
+    gs = try .init(allocator, screen);
+    defer gs.deinit();
 
     var thread = try std.Thread.spawn(.{}, loadImages, .{
         allocator,
@@ -191,5 +214,5 @@ pub fn main() !void {
     defer thread.join();
 
     try skn.run(update, draw);
-    end = true;
+    gs.should_run = false;
 }

@@ -82,6 +82,7 @@ fn searchFiles(self: *Self, len: usize) ![]u32 {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
+    // std.debug.print("here: {any}", .{query});
     try query.appendSlice("file_sort_type=4");
     try query.appendSlice("&tags=");
     _ = try std.Uri.Component.percentEncode(query.writer(), "[\"system:limit is ", isUnreserved);
@@ -104,13 +105,16 @@ fn searchFiles(self: *Self, len: usize) ![]u32 {
 }
 
 /// The caller owns the returned memory.
-pub fn render(self: *Self, id: u32, size: skn.Vector2) ![]const u8 {
+pub fn render(self: *Self, id: u32, format: skn.Image.Format, size: skn.Vector2) ![]const u8 {
     var query = std.ArrayList(u8).init(self.allocator);
     defer query.deinit();
 
-    const width: i32 = @intFromFloat(@round(size.x));
-    const height: i32 = @intFromFloat(@round(size.y));
-    try query.writer().print("width={}&height={}&file_id={}&render_format=1", .{ width, height, id });
+    try query.writer().print("width={}&height={}&file_id={}&render_format={}", .{
+        try size.getX(i32),
+        try size.getY(i32),
+        id,
+        @intFromEnum(format),
+    });
 
     return self.get("/get_files/render", query.items);
 }
@@ -154,6 +158,7 @@ pub fn getFiles(self: *Self, len: usize) ![]File {
                 .x = @floatFromInt(metadata.object.get("width").?.integer),
                 .y = @floatFromInt(metadata.object.get("height").?.integer),
             },
+            .hydrus = self,
         };
         if (file.elo == 0) {
             file.elo = 1000;
