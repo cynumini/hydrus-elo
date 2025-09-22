@@ -10,7 +10,9 @@ case "$1" in
         shift
         wayland-scanner private-code  /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml ./src/xdg-shell-protocol.c
         wayland-scanner client-header /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml ./src/xdg-shell-client-protocol.h
-        gcc ./src/main.c ./src/xdg-shell-protocol.c -o ./out/$bin -std=c99 -Wall -Werror -g -pedantic -lwayland-client -lrt
+        wayland-scanner private-code  /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml ./src/xdg-decoration-protocol.c
+        wayland-scanner client-header /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml ./src/xdg-decoration-client-protocol.h
+        gcc ./src/main.c ./src/window.c ./src/xdg-shell-protocol.c ./src/xdg-decoration-protocol.c -o ./out/$bin -std=c99 -Wall -Werror -g -pedantic -lwayland-client -lrt
         WAYLAND_DEBUG=1 ./out/$bin $@
         ;;
     install)
@@ -21,7 +23,7 @@ case "$1" in
             exit 1
         fi
         echo "Installing to $target_dir"
-        gcc ./src/main.c ./src/xdg-shell-protocol.c -o $target_dir/$bin -std=c99 -Wall -Werror -pedantic -lwayland-client -lrt -O2
+        gcc ./src/main.c ./src/window.c ./src/xdg-shell-protocol.c ./src/xdg-decoration-protocol.c -o $target_dir/$bin -std=c99 -Wall -Werror -pedantic -lwayland-client -lrt -O2
         ;;
     *)
         echo "Usage: $0 {run|install <dir>}"
