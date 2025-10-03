@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
+import QtQuick.Layouts
 
 import io.qt.textproperties
 
@@ -16,15 +17,27 @@ ApplicationWindow {
         id: bridge
     }
 
-    Rectangle {
-        id: main
-        width: 200
-        height: 200
-        color: "green"
+    GridLayout {
+        id: grid
+        columns: 2
+        rows: 3
 
-        Text {
-            text: bridge.getColor("red")
-            anchors.centerIn: main
+        ColumnLayout {
+            spacing: 2
+            Layout.columnSpan: 1
+            Layout.preferredWidth: 400
         }
     }
+
+    // Rectangle {
+    //     id: main
+    //     width: 200
+    //     height: 200
+    //     color: "green"
+    //
+    //     Text {
+    //         text: bridge.getColor("red")
+    //         anchors.centerIn: main
+    //     }
+    // }
 }
