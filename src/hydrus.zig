@@ -1,33 +1,77 @@
 const std = @import("std");
 
-const skn = @import("sakana");
+const Elo = @import("sakana").Elo;
+const rl = @import("raylib");
 
 const File = @import("file.zig");
 
 const Self = @This();
 
 const url = "http://127.0.0.1:45869";
-allocator: std.mem.Allocator,
+gpa: std.mem.Allocator,
 client: std.http.Client,
 access_key: []const u8,
 elo_service_key: ?[]const u8,
+league_service_keys: std.StringHashMapUnmanaged([]const u8) = .empty,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self: Self = .{
-        .allocator = allocator,
-        .client = std.http.Client{ .allocator = allocator },
-        .access_key = std.posix.getenv("HYDRUS_CLIENT_API").?,
+pub fn init(io: std.Io, gpa: std.mem.Allocator, access_key: []const u8) !Self {
+    return .{
+        .gpa = gpa,
+        .client = std.http.Client{ .allocator = gpa, .io = io },
+        .access_key = access_key,
         .elo_service_key = null,
     };
-    try self.setEloServiceKey();
-    return self;
 }
 
 pub fn deinit(self: *Self) void {
     if (self.elo_service_key) |elo_service_key| {
-        self.allocator.free(elo_service_key);
+        self.gpa.free(elo_service_key);
     }
+    var i = self.league_service_keys.iterator();
+    while (i.next()) |e| {
+        self.gpa.free(e.key_ptr.*);
+        self.gpa.free(e.value_ptr.*);
+    }
+    self.league_service_keys.deinit(self.gpa);
     self.client.deinit();
+}
+
+pub fn getEloServiceKey(self: *Self) ![]const u8 {
+    if (self.elo_service_key) |elo_service_key| {
+        return elo_service_key;
+    } else {
+        try self.loadServiceKey();
+        return self.elo_service_key.?;
+    }
+}
+
+fn loadServiceKey(self: *Self) !void {
+    const response = try self.get("/get_services", "");
+    defer self.gpa.free(response);
+
+    const json = try std.json.parseFromSlice(std.json.Value, self.gpa, response, .{});
+    defer json.deinit();
+
+    const services = json.value.object.get("services").?.object;
+
+    for (services.keys(), services.values()) |key, value| {
+        const name = value.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "elo")) {
+            self.elo_service_key = try self.gpa.dupe(u8, key);
+        }
+        if (std.mem.startsWith(u8, name, "league.")) {
+            try self.league_service_keys.put(
+                self.gpa,
+                try self.gpa.dupe(u8, name[7..]),
+                try self.gpa.dupe(u8, key),
+            );
+        }
+    }
+
+    if (self.elo_service_key == null) {
+        std.log.err("Please add local ind/dec rating service with name \"elo\"", .{});
+        return error.NoEloSerice;
+    }
 }
 
 /// The caller owns the returned memory.
@@ -37,18 +81,21 @@ pub fn get(self: *Self, path: []const u8, query: []const u8) ![]const u8 {
     uri.path = std.Uri.Component{ .percent_encoded = path };
     uri.query = std.Uri.Component{ .percent_encoded = query };
 
-    var response = std.ArrayList(u8).init(self.allocator);
+    var response = std.Io.Writer.Allocating.init(self.gpa);
+    defer response.deinit();
 
     const headers = [_]std.http.Header{
         .{ .name = "Hydrus-Client-API-Access-Key", .value = self.access_key },
     };
 
-    _ = try self.client.fetch(.{
+    const result = try self.client.fetch(.{
         .location = .{ .uri = uri },
         .extra_headers = &headers,
-        .response_storage = .{ .dynamic = &response },
-        .max_append_size = std.math.maxInt(usize),
+        .response_writer = &response.writer,
     });
+
+    std.debug.print("{s} {}\n", .{ query, result });
+    std.debug.assert(result.status == .ok);
 
     return try response.toOwnedSlice();
 }
@@ -59,7 +106,8 @@ pub fn post(self: *Self, path: []const u8, data: []const u8) ![]const u8 {
 
     uri.path = std.Uri.Component{ .percent_encoded = path };
 
-    var response = std.ArrayList(u8).init(self.allocator);
+    var response = std.Io.Writer.Allocating.init(self.gpa);
+    defer response.deinit();
 
     const headers = [_]std.http.Header{
         .{ .name = "Hydrus-Client-API-Access-Key", .value = self.access_key },
@@ -70,24 +118,20 @@ pub fn post(self: *Self, path: []const u8, data: []const u8) ![]const u8 {
         .location = .{ .uri = uri },
         .extra_headers = &headers,
         .payload = data,
-        .response_storage = .{ .dynamic = &response },
-        .max_append_size = std.math.maxInt(usize),
+        .response_writer = &response.writer,
     });
 
     return try response.toOwnedSlice();
 }
 
 /// The caller owns the returned memory.
-fn searchFiles(self: *Self, len: usize) ![]u32 {
-    var query = std.ArrayList(u8).init(self.allocator);
-    defer query.deinit();
+fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: []const u8) ![]u32 {
+    var query_writer = std.Io.Writer.Allocating.init(self.gpa);
+    defer query_writer.deinit();
 
-    // std.debug.print("here: {any}", .{query});
-    try query.appendSlice("file_sort_type=4");
-    try query.appendSlice("&tags=");
-    _ = try std.Uri.Component.percentEncode(query.writer(), "[\"system:limit is ", isUnreserved);
-    try query.writer().print("{}", .{len});
-    _ = try std.Uri.Component.percentEncode(query.writer(), "\", \"system:filetype is image\"]", isUnreserved);
+    _ = try query_writer.writer.write("file_sort_type=4");
+    _ = try query_writer.writer.write("&tags=");
+    _ = try std.Uri.Component.percentEncode(&query_writer.writer, tags, isUnreserved);
 
     const T = struct {
         file_ids: []u32,
@@ -95,93 +139,120 @@ fn searchFiles(self: *Self, len: usize) ![]u32 {
         hydrus_version: u32,
     };
 
-    const response = try self.get("/get_files/search_files", query.items);
-    defer self.allocator.free(response);
+    const query = try query_writer.toOwnedSlice();
+    defer gpa.free(query);
 
-    const json = try std.json.parseFromSlice(T, self.allocator, response, .{});
+    const response = try self.get("/get_files/search_files", query);
+    defer gpa.free(response);
+
+    const json = try std.json.parseFromSlice(T, gpa, response, .{});
     defer json.deinit();
 
-    return self.allocator.dupe(u32, json.value.file_ids);
+    return gpa.dupe(u32, json.value.file_ids);
+}
+
+pub const Format = enum(u8) {
+    jpeg = 1,
+    png = 2,
+    wemp = 33,
+    apng = 23,
+    animated_webp = 83,
+};
+
+/// The caller owns thea returned memory.
+pub fn render(self: *Self, gpa: std.mem.Allocator, id: usize, format: Format, size: rl.Vector2) ![]const u8 {
+    var query_writer: std.Io.Writer.Allocating = .init(gpa);
+    defer query_writer.deinit();
+
+    try query_writer.writer.print(
+        "width={}&height={}&file_id={}&render_format={}",
+        .{ @round(size.x), @round(size.y), id, @intFromEnum(format) },
+    );
+
+    const query = try query_writer.toOwnedSlice();
+    defer gpa.free(query);
+
+    return self.get("/get_files/render", query);
 }
 
 /// The caller owns the returned memory.
-pub fn render(self: *Self, id: u32, format: skn.Image.Format, size: skn.Vector2) ![]const u8 {
-    var query = std.ArrayList(u8).init(self.allocator);
-    defer query.deinit();
+pub fn getFiles(self: *Self, gpa: std.mem.Allocator, tags: []const u8, league_name: []const u8) ![]File {
+    const elo_service_key = try self.getEloServiceKey();
+    const league_service_key = self.league_service_keys.get(league_name) orelse {
+        std.log.err("Please add local numerical rating service with name \"league.{s}\" and namer of \"star\" = 6", .{league_name});
+        return error.NoLeagueSerice;
+    };
 
-    try query.writer().print("width={}&height={}&file_id={}&render_format={}", .{
-        try size.getX(i32),
-        try size.getY(i32),
-        id,
-        @intFromEnum(format),
-    });
+    const ids = try self.searchFiles(gpa, tags);
+    defer gpa.free(ids);
 
-    return self.get("/get_files/render", query.items);
-}
+    var query_writer: std.Io.Writer.Allocating = .init(gpa);
+    defer query_writer.deinit();
+    var s = std.json.Stringify{ .writer = &query_writer.writer };
 
-/// The caller owns the returned memory.
-pub fn getFiles(self: *Self, len: usize) ![]File {
-    const ids = try self.searchFiles(len);
-    defer self.allocator.free(ids);
+    var files = std.ArrayList(File).empty;
 
-    var query = std.ArrayList(u8).init(self.allocator);
-    defer query.deinit();
+    try s.beginArray();
+    for (ids) |id| try s.write(id);
+    try s.endArray();
 
-    var files = std.ArrayList(File).init(self.allocator);
+    const ids_json = try query_writer.toOwnedSlice();
+    defer gpa.free(ids_json);
 
-    try query.append('[');
+    _ = try query_writer.writer.write("file_ids=");
 
-    for (ids) |id| {
-        try query.writer().print("{},", .{id});
-    }
+    _ = try std.Uri.Component.percentEncode(&query_writer.writer, ids_json, isUnreserved);
 
-    query.items[query.items.len - 1] = ']';
+    const query = try query_writer.toOwnedSlice();
+    defer gpa.free(query);
 
-    const ids_json = try query.toOwnedSlice();
-    defer self.allocator.free(ids_json);
+    const response = try self.get("/get_files/file_metadata", query);
+    defer gpa.free(response);
 
-    try query.appendSlice("file_ids=");
+    // std.debug.print("{s}\n", .{response});
 
-    _ = try std.Uri.Component.percentEncode(query.writer(), ids_json, isUnreserved);
-
-    const response = try self.get("/get_files/file_metadata", query.items);
-    defer self.allocator.free(response);
-
-    const json = try std.json.parseFromSlice(std.json.Value, self.allocator, response, .{});
+    const json = try std.json.parseFromSlice(std.json.Value, gpa, response, .{});
     defer json.deinit();
 
     for (json.value.object.get("metadata").?.array.items) |metadata| {
+        const rank: Elo.Rank = switch (metadata.object.get("ratings").?.object.get(league_service_key).?) {
+            .null => .unranked,
+            .integer => |i| @enumFromInt(i),
+            else => unreachable,
+        };
         var file: File = .{
             .id = @intCast(metadata.object.get("file_id").?.integer),
-            .elo = @intCast(metadata.object.get("ratings").?.object.get(self.elo_service_key.?).?.integer),
+            .elo = @intCast(metadata.object.get("ratings").?.object.get(elo_service_key).?.integer),
+            .rank = rank,
             .size = .{
                 .x = @floatFromInt(metadata.object.get("width").?.integer),
                 .y = @floatFromInt(metadata.object.get("height").?.integer),
             },
-            .hydrus = self,
         };
         if (file.elo == 0) {
             file.elo = 1000;
         }
-        try files.append(file);
+        try files.append(gpa, file);
     }
 
-    return files.toOwnedSlice();
+    return files.toOwnedSlice(gpa);
 }
 
-/// The caller owns the returned memory.
-pub fn setElo(self: *Self, id: u32, elo: i32) !void {
-    var query = std.ArrayList(u8).init(self.allocator);
-    defer query.deinit();
+pub fn setElo(self: *Self, id: usize, elo: u32) !void {
+    var query_writer: std.Io.Writer.Allocating = .init(self.gpa);
+    defer query_writer.deinit();
 
-    try query.writer().print("{{\"file_id\":{},\"rating_service_key\":\"{s}\",\"rating\":{}}}", .{
+    try query_writer.writer.print("{{\"file_id\":{},\"rating_service_key\":\"{s}\",\"rating\":{}}}", .{
         id,
         self.elo_service_key.?,
         elo,
     });
 
-    const result = try self.post("/edit_ratings/set_rating", query.items);
-    defer self.allocator.free(result);
+    const query = try query_writer.toOwnedSlice();
+    defer self.gpa.free(query);
+
+    const result = try self.post("/edit_ratings/set_rating", query);
+    defer self.gpa.free(result);
 
     if (result.len != 0) {
         std.debug.print("Error: {s}\n", .{result});
@@ -190,22 +261,26 @@ pub fn setElo(self: *Self, id: u32, elo: i32) !void {
 }
 
 /// The caller owns the returned memory.
-fn setEloServiceKey(self: *Self) !void {
-    const response = try self.get("/get_services", "");
-    defer self.allocator.free(response);
+pub fn setLeague(self: *Self, id: usize, league_name: []const u8, rank: Elo.Rank) !void {
+    var query_writer: std.Io.Writer.Allocating = .init(self.gpa);
+    defer query_writer.deinit();
 
-    const json = try std.json.parseFromSlice(std.json.Value, self.allocator, response, .{});
-    defer json.deinit();
+    try query_writer.writer.print("{{\"file_id\":{},\"rating_service_key\":\"{s}\",\"rating\":{}}}", .{
+        id,
+        self.league_service_keys.get(league_name).?,
+        @intFromEnum(rank),
+    });
 
-    const services = json.value.object.get("services").?.object;
+    const query = try query_writer.toOwnedSlice();
+    defer self.gpa.free(query);
 
-    const elo_service_key: []const u8 = blk: {
-        for (services.keys(), services.values()) |key, value| {
-            if (std.mem.eql(u8, value.object.get("name").?.string, "elo")) break :blk key;
-        }
-        return error.NoEloService;
-    };
-    self.elo_service_key = try self.allocator.dupe(u8, elo_service_key);
+    const result = try self.post("/edit_ratings/set_rating", query);
+    defer self.gpa.free(result);
+
+    if (result.len != 0) {
+        std.debug.print("Error: {s}\n", .{result});
+        return error.SetEloError;
+    }
 }
 
 fn isUnreserved(char: u8) bool {

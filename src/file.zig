@@ -1,59 +1,55 @@
 const std = @import("std");
 
-const skn = @import("sakana");
+const Elo = @import("sakana").Elo;
+const rl = @import("raylib");
 
 const Hydrus = @import("hydrus.zig");
 
 const Self = @This();
 
-const k_factor = 32;
+id: usize,
+elo: u32,
+size: rl.Vector2,
+rank: Elo.Rank = .unranked,
+image: ?rl.Image = null,
+texture: ?rl.Texture = null,
 
-id: u32,
-elo: i32,
-size: skn.Vector2,
-image: ?skn.Image = null,
-texture: ?skn.Texture = null,
-hydrus: *Hydrus,
+pub fn scaleTo(self: rl.Vector2, max: rl.Vector2) rl.Vector2 {
+    const aspect = self.x / self.y;
 
-fn setElo(self: *Self, hydrus: *Hydrus, elo: i32) !void {
-    self.elo = elo;
-    try hydrus.setElo(self.id, elo);
+    if (max.x / max.y > aspect) {
+        return .{
+            .x = max.y * aspect,
+            .y = max.y,
+        };
+    } else {
+        return .{
+            .x = max.x,
+            .y = max.x / aspect,
+        };
+    }
 }
 
-pub fn loadImage(self: *Self, allocator: std.mem.Allocator, max_size: skn.Vector2) !void {
-    if (self.size.x > max_size.x or self.size.y > max_size.y) self.size = self.size.scaleTo(max_size);
+pub fn loadImage(self: *Self, gpa: std.mem.Allocator, max_size: rl.Vector2, hydrus: *Hydrus) !void {
+    if (self.size.x > max_size.x or self.size.y > max_size.y) self.size = scaleTo(self.size, max_size);
 
-    const data = try self.hydrus.render(self.id, .jpeg, self.size);
-    defer allocator.free(data);
+    const data = try hydrus.render(gpa, self.id, .png, self.size);
+    defer gpa.free(data);
 
-    self.image = try skn.Image.init(data, .memory, .jpeg);
+    self.image = try rl.loadImageFromMemory(".png", data);
 }
 
 pub fn loadTexture(self: *Self) !void {
-    self.texture = try skn.Texture.initFromImage(self.image.?);
-    self.image.?.deinit();
+    self.texture = try rl.loadTextureFromImage(self.image.?);
+    self.image.?.unload();
     self.image = null;
-}
-
-pub fn floatElo(self: Self) f32 {
-    return @floatFromInt(self.elo);
-}
-
-pub fn play(self: *Self, other: *Self, result: f32) !void {
-    const elo_diff: f32 = @floatFromInt(other.elo - self.elo);
-    const p_self_elo = 1.0 / (1 + std.math.pow(f32, 10, elo_diff / 400.0));
-    const p_other_elo = 1.0 - p_self_elo;
-    std.debug.print("old elo {} {} {d} - ", .{ self.elo, other.elo, result });
-    try self.setElo(self.hydrus, @intFromFloat(@round(self.floatElo() + k_factor * (result - p_self_elo))));
-    try other.setElo(self.hydrus, @intFromFloat(@round(other.floatElo() + k_factor * ((1 - result) - p_other_elo))));
-    std.debug.print("new elo {} {}\n", .{ self.elo, other.elo });
 }
 
 pub fn deinit(self: *Self) void {
     if (self.image) |*image| {
-        image.deinit();
+        image.unload();
     }
     if (self.texture) |*texture| {
-        texture.deinit();
+        texture.unload();
     }
 }
