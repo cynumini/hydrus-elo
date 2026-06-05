@@ -97,7 +97,14 @@ pub fn main(init: std.process.Init) !void {
                 leagues,
                 &hydrus,
             ),
-            .player => {},
+            .player => try @import("player.zig").run(
+                init,
+                &iter,
+                program_name,
+                &writer.interface,
+                leagues,
+                &hydrus,
+            ),
         }
     }
 }

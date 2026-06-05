@@ -124,17 +124,30 @@ pub fn post(self: *Self, path: []const u8, data: []const u8) ![]const u8 {
     return try response.toOwnedSlice();
 }
 
+fn tagToString(gpa: std.mem.Allocator, tags: [][]const u8) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var s = std.json.Stringify{ .writer = &out.writer };
+    try s.beginArray();
+    for (tags) |tag| try s.write(tag);
+    try s.endArray();
+    return out.toOwnedSlice();
+}
+
 /// The caller owns the returned memory.
-fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: []const u8) ![]u32 {
+pub fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: [][]const u8) ![]usize {
     var query_writer = std.Io.Writer.Allocating.init(self.gpa);
     defer query_writer.deinit();
 
+    const q = try tagToString(gpa, tags);
+    defer gpa.free(q);
+
     _ = try query_writer.writer.write("file_sort_type=4");
     _ = try query_writer.writer.write("&tags=");
-    _ = try std.Uri.Component.percentEncode(&query_writer.writer, tags, isUnreserved);
+    _ = try std.Uri.Component.percentEncode(&query_writer.writer, q, isUnreserved);
 
     const T = struct {
-        file_ids: []u32,
+        file_ids: []usize,
         version: u32,
         hydrus_version: u32,
     };
@@ -148,7 +161,7 @@ fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: []const u8) ![]u32 {
     const json = try std.json.parseFromSlice(T, gpa, response, .{});
     defer json.deinit();
 
-    return gpa.dupe(u32, json.value.file_ids);
+    return gpa.dupe(usize, json.value.file_ids);
 }
 
 pub const Format = enum(u8) {
@@ -176,15 +189,17 @@ pub fn render(self: *Self, gpa: std.mem.Allocator, id: usize, format: Format, si
 }
 
 /// The caller owns the returned memory.
-pub fn getFiles(self: *Self, gpa: std.mem.Allocator, tags: []const u8, league_name: []const u8) ![]File {
+pub fn getFiles(
+    self: *Self,
+    gpa: std.mem.Allocator,
+    ids: []usize,
+    league_name: []const u8,
+) ![]File {
     const elo_service_key = try self.getEloServiceKey();
     const league_service_key = self.league_service_keys.get(league_name) orelse {
         std.log.err("Please add local numerical rating service with name \"league.{s}\" and namer of \"star\" = 6", .{league_name});
         return error.NoLeagueSerice;
     };
-
-    const ids = try self.searchFiles(gpa, tags);
-    defer gpa.free(ids);
 
     var query_writer: std.Io.Writer.Allocating = .init(gpa);
     defer query_writer.deinit();
@@ -265,11 +280,17 @@ pub fn setLeague(self: *Self, id: usize, league_name: []const u8, rank: Elo.Rank
     var query_writer: std.Io.Writer.Allocating = .init(self.gpa);
     defer query_writer.deinit();
 
-    try query_writer.writer.print("{{\"file_id\":{},\"rating_service_key\":\"{s}\",\"rating\":{}}}", .{
-        id,
-        self.league_service_keys.get(league_name).?,
-        @intFromEnum(rank),
-    });
+    if (rank != .unranked) {
+        try query_writer.writer.print(
+            "{{\"file_id\":{},\"rating_service_key\":\"{s}\",\"rating\":{}}}",
+            .{ id, self.league_service_keys.get(league_name).?, @intFromEnum(rank) },
+        );
+    } else {
+        try query_writer.writer.print(
+            "{{\"file_id\":{},\"rating_service_key\":\"{s}\",\"rating\":null}}",
+            .{ id, self.league_service_keys.get(league_name).? },
+        );
+    }
 
     const query = try query_writer.toOwnedSlice();
     defer self.gpa.free(query);

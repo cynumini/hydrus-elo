@@ -56,10 +56,50 @@ pub fn init(
     rl.setConfigFlags(.{ .window_resizable = true });
     rl.initWindow(self.width, self.height, "hydrus-elo");
 
-    const tags = try leagues.get(gpa, league_name);
-    defer gpa.free(tags);
+    const tags = leagues.get(league_name);
 
-    self.files = try self.hydrus.getFiles(gpa, tags, league_name);
+    var ids: std.ArrayList(usize) = .empty;
+    defer ids.deinit(gpa);
+
+    {
+        var tags_with_rating = std.ArrayList([]const u8).empty;
+        defer tags_with_rating.deinit(gpa);
+        try tags_with_rating.appendSlice(gpa, tags);
+
+        const tag = try std.fmt.allocPrint(
+            gpa,
+            "system:rating for league.{s} more than 0/6",
+            .{league_name},
+        );
+        defer gpa.free(tag);
+
+        try tags_with_rating.append(gpa, tag);
+
+        const result = try self.hydrus.searchFiles(gpa, tags_with_rating.items);
+        defer gpa.free(result);
+
+        try ids.appendSlice(gpa, result);
+    }
+    {
+        var tags_without_rating = std.ArrayList([]const u8).empty;
+        defer tags_without_rating.deinit(gpa);
+        try tags_without_rating.appendSlice(gpa, tags);
+
+        const tag = try std.fmt.allocPrint(gpa, "system:no rating for league.{s}", .{league_name});
+        defer gpa.free(tag);
+
+        try tags_without_rating.append(gpa, tag);
+        try tags_without_rating.append(gpa, "system:limit is 128");
+
+        const result = try self.hydrus.searchFiles(gpa, tags_without_rating.items);
+        defer gpa.free(result);
+
+        try ids.appendSlice(gpa, result);
+    }
+
+    std.debug.print("{}\n", .{ids.items.len});
+
+    self.files = try self.hydrus.getFiles(gpa, ids.items, league_name);
 
     self.players = try std.ArrayList(Elo.Player).initCapacity(gpa, self.files.len);
 

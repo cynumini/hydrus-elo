@@ -100,13 +100,7 @@ pub fn deinit(self: *Self) void {
 }
 
 /// The caller owns the returned memory.
-pub fn get(self: Self, gpa: std.mem.Allocator, name: []const u8) ![]const u8 {
+pub fn get(self: Self, name: []const u8) [][]const u8 {
     const tags = self.data.get(name).?;
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    var s = std.json.Stringify{ .writer = &out.writer };
-    try s.beginArray();
-    for (tags.items) |tag| try s.write(tag);
-    try s.endArray();
-    return out.toOwnedSlice();
+    return tags.items;
 }
