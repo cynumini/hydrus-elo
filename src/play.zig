@@ -16,11 +16,11 @@ gpa: std.mem.Allocator,
 leagues: Leagues,
 league_name: []const u8,
 hydrus: *Hydrus,
-files: []File,
-players: std.ArrayList(Elo.Player) = .empty,
 
 width: i32 = 1280,
 height: i32 = 720,
+
+running: bool = true,
 
 fn loadImages(gpa: std.mem.Allocator, files: []File, max_size: rl.Vector2, running: *bool, hydrus: *Hydrus) !void {
     for (files) |*file| {
@@ -45,85 +45,132 @@ pub fn init(
     league_name: []const u8,
     hydrus: *Hydrus,
 ) !Self {
-    var self: Self = .{
+    const self: Self = .{
         .io = io,
         .gpa = gpa,
         .leagues = leagues,
         .league_name = league_name,
         .hydrus = hydrus,
-        .files = undefined,
     };
+    rl.setTraceLogLevel(.none);
     rl.setConfigFlags(.{ .window_resizable = true });
     rl.initWindow(self.width, self.height, "hydrus-elo");
-
-    const tags = leagues.get(league_name);
-
-    var ids: std.ArrayList(usize) = .empty;
-    defer ids.deinit(gpa);
-
-    {
-        var tags_with_rating = std.ArrayList([]const u8).empty;
-        defer tags_with_rating.deinit(gpa);
-        try tags_with_rating.appendSlice(gpa, tags);
-
-        const tag = try std.fmt.allocPrint(
-            gpa,
-            "system:rating for league.{s} more than 0/6",
-            .{league_name},
-        );
-        defer gpa.free(tag);
-
-        try tags_with_rating.append(gpa, tag);
-
-        const result = try self.hydrus.searchFiles(gpa, tags_with_rating.items);
-        defer gpa.free(result);
-
-        try ids.appendSlice(gpa, result);
-    }
-    {
-        var tags_without_rating = std.ArrayList([]const u8).empty;
-        defer tags_without_rating.deinit(gpa);
-        try tags_without_rating.appendSlice(gpa, tags);
-
-        const tag = try std.fmt.allocPrint(gpa, "system:no rating for league.{s}", .{league_name});
-        defer gpa.free(tag);
-
-        try tags_without_rating.append(gpa, tag);
-        try tags_without_rating.append(gpa, "system:limit is 128");
-
-        const result = try self.hydrus.searchFiles(gpa, tags_without_rating.items);
-        defer gpa.free(result);
-
-        try ids.appendSlice(gpa, result);
-    }
-
-    std.debug.print("{}\n", .{ids.items.len});
-
-    self.files = try self.hydrus.getFiles(gpa, ids.items, league_name);
-
-    self.players = try std.ArrayList(Elo.Player).initCapacity(gpa, self.files.len);
-
-    for (self.files) |file| {
-        try self.players.append(gpa, .{ .id = file.id, .elo = file.elo, .rank = file.rank });
-    }
-
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.players.deinit(self.gpa);
-    self.gpa.free(self.files);
+    self.running = false;
     rl.closeWindow();
+}
+
+pub fn findBestElo(gpa: std.mem.Allocator, hydrus: *Hydrus, max_ids: usize, tags: std.ArrayList([]const u8)) !u32 {
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+
+    const a = scratch.allocator();
+
+    var best_elo: u32 = 0;
+    var elo: u32 = 0;
+
+    var ids = try hydrus.searchFiles(a, tags.items);
+
+    std.log.info("With no elo, count = {}", .{ids.len});
+
+    while (ids.len >= max_ids) {
+        defer _ = scratch.reset(.retain_capacity);
+
+        best_elo = elo;
+        if (ids.len == max_ids) return best_elo;
+        elo += 100;
+
+        var tmp_tags = try tags.clone(a);
+        const elo_tag = try std.fmt.allocPrint(a, "system:count for elo more than {}", .{elo});
+        try tmp_tags.append(a, elo_tag);
+
+        ids = try hydrus.searchFiles(a, tmp_tags.items);
+
+        std.log.info("With elo = {}, count = {}", .{ elo, ids.len });
+    } else {
+        return best_elo;
+    }
+}
+
+/// The caller owns the returned memory.
+pub fn getFiles(gpa: std.mem.Allocator, hydrus: *Hydrus, strategy: Elo.Strategy, league_name: []const u8, leagues: Leagues) ![]File {
+    var ids = std.ArrayList(usize).empty;
+    defer ids.deinit(gpa);
+
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+
+    const a = scratch.allocator();
+
+    var ranked_ids_len: usize = 0;
+
+    {
+        const tag = try std.fmt.allocPrint(a, "system:has rating for league.{s}", .{league_name});
+        const ranked_ids = hydrus.searchFiles(a, &.{tag}) catch |err| switch (err) {
+            error.BadRequest => {
+                if (hydrus.league_service_keys.get(league_name) == null) {
+                    std.log.err("Please add local numerical rating service with name \"league.{s}\" and number of \"stars\" = 6", .{league_name});
+                    std.process.exit(1);
+                } else return err;
+            },
+            else => return err,
+        };
+        try ids.appendSlice(gpa, ranked_ids);
+        ranked_ids_len = ranked_ids.len;
+        std.log.info("Ranked files = {}", .{ranked_ids_len});
+    }
+
+    var tags = std.ArrayList([]const u8).empty;
+    try tags.appendSlice(a, leagues.get(league_name));
+    const no_rating_tag = try std.fmt.allocPrint(a, "system:no rating for league.{s}", .{league_name});
+    try tags.append(a, no_rating_tag);
+    // The limit is currently Elo.Rank.wood.max(), but it may change
+    switch (strategy) {
+        .ranks => {
+            const limit_tag = try std.fmt.allocPrint(a, "system:limit is {}", .{Elo.Rank.wood.max()});
+            try tags.append(a, limit_tag);
+            const unranked_ids = try hydrus.searchFiles(a, tags.items);
+            try ids.appendSlice(gpa, unranked_ids);
+        },
+        .promos => {
+            const elo = try findBestElo(a, hydrus, Elo.Rank.MaxLeagueLen - ranked_ids_len + 1, tags);
+            const elo_tag = try std.fmt.allocPrint(a, "system:count for elo more than {}", .{elo});
+            try tags.append(a, elo_tag);
+            const unranked_ids = try hydrus.searchFiles(a, tags.items);
+            try ids.appendSlice(gpa, unranked_ids);
+        },
+        .player => |p| {
+            var need_to_add = true;
+            for (ids.items) |id| {
+                if (p.id == id) need_to_add = false;
+            }
+            if (need_to_add) {
+                try ids.append(gpa, p.id);
+            }
+        },
+    }
+    std.log.info("Unranked files = {}", .{ids.items.len - ranked_ids_len});
+
+    return try hydrus.getFiles(gpa, ids.items, league_name);
 }
 
 pub fn play(
     self: *Self,
     strategy: Elo.Strategy,
 ) !void {
-    for (self.players.items) |p| {
-        std.debug.print("{}\n", .{p});
+    const files = try getFiles(self.gpa, self.hydrus, strategy, self.league_name, self.leagues);
+    defer self.gpa.free(files);
+
+    var players = try std.ArrayList(Elo.Player).initCapacity(self.gpa, files.len);
+    for (files) |file| {
+        try players.append(self.gpa, .{ .id = file.id, .elo = file.elo, .rank = file.rank });
     }
-    var elo = try Elo.init(self.gpa, self.io, self.players.items, strategy);
+    defer players.deinit(self.gpa);
+
+    var elo = try Elo.init(self.gpa, self.io, players.items, strategy);
     defer elo.deinit();
 
     try elo.generate();
@@ -141,16 +188,18 @@ pub fn play(
         defer chosen_ids.deinit(self.gpa);
 
         for (chosen_ids.items) |id| {
-            try resources.append(self.gpa, getResource(self.files, id).?);
+            try resources.append(self.gpa, getResource(files, id).?);
         }
     }
 
     const max_width = rl.getMonitorWidth(0);
     const max_height = rl.getMonitorHeight(0);
 
-    var running = true;
-
-    var thread = try std.Thread.spawn(.{}, loadImages, .{ self.gpa, resources.items, rl.Vector2{ .x = @floatFromInt(max_width), .y = @floatFromInt(max_height) }, &running, self.hydrus });
+    var thread = try std.Thread.spawn(
+        .{},
+        loadImages,
+        .{ self.gpa, resources.items, rl.Vector2{ .x = @floatFromInt(max_width), .y = @floatFromInt(max_height) }, &self.running, self.hydrus },
+    );
     defer thread.join();
 
     var action = try elo.next();
@@ -161,22 +210,31 @@ pub fn play(
     defer arena.deinit();
     const frame_gpa = arena.allocator();
 
-    while (running and action != null) {
+    var need_print = true;
+
+    while (self.running and action != null) : ({
+        self.running = !rl.windowShouldClose();
+    }) {
         defer _ = arena.reset(.retain_capacity);
-        running = !rl.windowShouldClose();
+
         if (rl.isWindowResized()) {
             self.width = rl.getScreenWidth();
             self.height = rl.getScreenHeight();
         }
         switch (action.?.*) {
             .match => |value| {
-                const need_print = p1 == null;
                 p1 = getResource(resources.items, elo.getId(value.player1));
                 p1.?.elo = elo.getElo(value.player1);
                 p2 = getResource(resources.items, elo.getId(value.player2));
                 p2.?.elo = elo.getElo(value.player2);
                 if (need_print) {
-                    std.log.info("{} vs {}", .{ elo.getId(value.player1), elo.getId(value.player2) });
+                    std.log.info("{} ({}) vs {} ({})", .{
+                        elo.getId(value.player1),
+                        elo.getElo(value.player1),
+                        elo.getId(value.player2),
+                        elo.getElo(value.player2),
+                    });
+                    need_print = false;
                 }
             },
             .rank => |value| {
@@ -207,6 +265,11 @@ pub fn play(
                 std.log.info("{} - {}", r);
             }
             action = try elo.next();
+            if (action) |a| {
+                if (a.* == .match) {
+                    need_print = true;
+                }
+            }
         }
 
         for (resources.items) |*file| if (file.image != null) try file.loadTexture();
@@ -279,6 +342,4 @@ pub fn play(
         try self.hydrus.setElo(id, elo_value);
         try self.hydrus.setLeague(id, self.league_name, rank);
     }
-
-    running = false;
 }

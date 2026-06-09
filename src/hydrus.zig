@@ -9,6 +9,7 @@ const Self = @This();
 
 const url = "http://127.0.0.1:45869";
 gpa: std.mem.Allocator,
+io: std.Io,
 client: std.http.Client,
 access_key: []const u8,
 elo_service_key: ?[]const u8,
@@ -17,6 +18,7 @@ league_service_keys: std.StringHashMapUnmanaged([]const u8) = .empty,
 pub fn init(io: std.Io, gpa: std.mem.Allocator, access_key: []const u8) !Self {
     return .{
         .gpa = gpa,
+        .io = io,
         .client = std.http.Client{ .allocator = gpa, .io = io },
         .access_key = access_key,
         .elo_service_key = null,
@@ -46,7 +48,7 @@ pub fn getEloServiceKey(self: *Self) ![]const u8 {
 }
 
 fn loadServiceKey(self: *Self) !void {
-    const response = try self.get("/get_services", "");
+    const response = try self.get(self.gpa, "/get_services", "");
     defer self.gpa.free(response);
 
     const json = try std.json.parseFromSlice(std.json.Value, self.gpa, response, .{});
@@ -74,30 +76,49 @@ fn loadServiceKey(self: *Self) !void {
     }
 }
 
+pub fn fetch(self: *Self, options: std.http.Client.FetchOptions) !std.http.Client.FetchResult {
+    return self.client.fetch(options) catch |err| switch (err) {
+        error.HttpConnectionClosing => {
+            self.client.deinit();
+            self.client = std.http.Client{ .allocator = self.gpa, .io = self.io };
+            std.log.warn("Try to reinit client", .{});
+            return try self.fetch(options);
+        },
+        else => return err,
+    };
+}
+
 /// The caller owns the returned memory.
-pub fn get(self: *Self, path: []const u8, query: []const u8) ![]const u8 {
+pub fn get(self: *Self, gpa: std.mem.Allocator, path: []const u8, query: []const u8) ![]const u8 {
     var uri = try std.Uri.parse(url);
 
     uri.path = std.Uri.Component{ .percent_encoded = path };
     uri.query = std.Uri.Component{ .percent_encoded = query };
 
-    var response = std.Io.Writer.Allocating.init(self.gpa);
+    var response = std.Io.Writer.Allocating.init(gpa);
     defer response.deinit();
 
     const headers = [_]std.http.Header{
         .{ .name = "Hydrus-Client-API-Access-Key", .value = self.access_key },
     };
 
-    const result = try self.client.fetch(.{
+    const result = try self.fetch(.{
         .location = .{ .uri = uri },
         .extra_headers = &headers,
         .response_writer = &response.writer,
     });
 
-    std.debug.print("{s} {}\n", .{ query, result });
-    std.debug.assert(result.status == .ok);
+    const text = try response.toOwnedSlice();
 
-    return try response.toOwnedSlice();
+    if (result.status != .ok) {
+        if (result.status == .bad_request) {
+            return error.BadRequest;
+        }
+        std.debug.print("{s} {}\n{s}\n", .{ query, result, text });
+        std.debug.assert(result.status == .ok);
+    }
+
+    return text;
 }
 
 /// The caller owns the returned memory.
@@ -114,7 +135,7 @@ pub fn post(self: *Self, path: []const u8, data: []const u8) ![]const u8 {
         .{ .name = "Content-Type", .value = "application/json" },
     };
 
-    _ = try self.client.fetch(.{
+    _ = try self.fetch(.{
         .location = .{ .uri = uri },
         .extra_headers = &headers,
         .payload = data,
@@ -124,7 +145,7 @@ pub fn post(self: *Self, path: []const u8, data: []const u8) ![]const u8 {
     return try response.toOwnedSlice();
 }
 
-fn tagToString(gpa: std.mem.Allocator, tags: [][]const u8) ![]const u8 {
+fn tagToString(gpa: std.mem.Allocator, tags: []const []const u8) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     var s = std.json.Stringify{ .writer = &out.writer };
@@ -135,8 +156,8 @@ fn tagToString(gpa: std.mem.Allocator, tags: [][]const u8) ![]const u8 {
 }
 
 /// The caller owns the returned memory.
-pub fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: [][]const u8) ![]usize {
-    var query_writer = std.Io.Writer.Allocating.init(self.gpa);
+pub fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: []const []const u8) ![]usize {
+    var query_writer = std.Io.Writer.Allocating.init(gpa);
     defer query_writer.deinit();
 
     const q = try tagToString(gpa, tags);
@@ -155,7 +176,7 @@ pub fn searchFiles(self: *Self, gpa: std.mem.Allocator, tags: [][]const u8) ![]u
     const query = try query_writer.toOwnedSlice();
     defer gpa.free(query);
 
-    const response = try self.get("/get_files/search_files", query);
+    const response = try self.get(gpa, "/get_files/search_files", query);
     defer gpa.free(response);
 
     const json = try std.json.parseFromSlice(T, gpa, response, .{});
@@ -185,7 +206,7 @@ pub fn render(self: *Self, gpa: std.mem.Allocator, id: usize, format: Format, si
     const query = try query_writer.toOwnedSlice();
     defer gpa.free(query);
 
-    return self.get("/get_files/render", query);
+    return self.get(gpa, "/get_files/render", query);
 }
 
 /// The caller owns the returned memory.
@@ -197,7 +218,7 @@ pub fn getFiles(
 ) ![]File {
     const elo_service_key = try self.getEloServiceKey();
     const league_service_key = self.league_service_keys.get(league_name) orelse {
-        std.log.err("Please add local numerical rating service with name \"league.{s}\" and namer of \"star\" = 6", .{league_name});
+        std.log.err("Please add local numerical rating service with name \"league.{s}\" and number of \"stars\" = 6", .{league_name});
         return error.NoLeagueSerice;
     };
 
@@ -221,7 +242,7 @@ pub fn getFiles(
     const query = try query_writer.toOwnedSlice();
     defer gpa.free(query);
 
-    const response = try self.get("/get_files/file_metadata", query);
+    const response = try self.get(gpa, "/get_files/file_metadata", query);
     defer gpa.free(response);
 
     // std.debug.print("{s}\n", .{response});
