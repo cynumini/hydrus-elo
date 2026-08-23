@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const raylib = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,
+        .linux_display_backend = .Wayland,
     });
     const raylib_artifact = raylib.artifact("raylib"); // raylib C library
     const exe = b.addExecutable(.{

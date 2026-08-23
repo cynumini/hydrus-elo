@@ -128,9 +128,10 @@ pub fn getFiles(gpa: std.mem.Allocator, hydrus: *Hydrus, strategy: Elo.Strategy,
     const no_rating_tag = try std.fmt.allocPrint(a, "system:no rating for league.{s}", .{league_name});
     try tags.append(a, no_rating_tag);
     // The limit is currently Elo.Rank.wood.max(), but it may change
+    // wood.max is too small. Let's try 1024
     switch (strategy) {
         .ranks => {
-            const limit_tag = try std.fmt.allocPrint(a, "system:limit is {}", .{Elo.Rank.wood.max()});
+            const limit_tag = try std.fmt.allocPrint(a, "system:limit is {}", .{1024});
             try tags.append(a, limit_tag);
             const unranked_ids = try hydrus.searchFiles(a, tags.items);
             try ids.appendSlice(gpa, unranked_ids);
