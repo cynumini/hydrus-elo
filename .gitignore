@@ -1,19 +1,68 @@
-# This file is for zig-specific build artifacts.
-# If you have OS-specific or editor-specific files to ignore,
-# such as *.swp or .DS_Store, put those in your global
-# ~/.gitignore and put this in your ~/.gitconfig:
-#
-# [core]
-#     excludesfile = ~/.gitignore
-#
-# Cheers!
-# -andrewrk
+# Prerequisites
+*.d
 
-.zig-cache/
-zig-out/
-zig-pkg/
-/release/
-/debug/
-/build/
-/build-*/
-/docgen_tmp/
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+*.so.*
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Build directories
+build/
+Build/
+build-*/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*.swp
+
+# vcpkg
+vcpkg_installed/
+
+# debug information files
+*.dwo
+
+# test output & cache
+Testing/
+.cache/
