@@ -1,3 +1,6 @@
 Completion:
-  AllScopes: Yes
   HeaderInsertion: Never
+Diagnostics:
+  Suppress:
+    - unused-function
+    - unused-includes
