@@ -1,15 +1,15 @@
-#include "sakana/build.cpp"
+#include "sakana/skn_build.cpp"
 
 i32 main(i32 argc, const char *argv[]) {
     rebuildAndRestartOnChanges(argc, argv);
 
     const char *output = "./build/hydrus-elo";
     const char *input[] = {
-        "src/main.cpp",
-        "sakana/sakana.cpp",
-        "sakana/unagi.cpp",
-        glslcHpp("src/shader.frag", "build/shader.frag.hpp", "shader_frag_code"),
-        glslcHpp("src/shader.vert", "build/shader.vert.hpp", "shader_vert_code"),
+        "hydrus-elo.cpp",
+        "sakana/skn.cpp",
+        "sakana/skn_sdl.cpp",
+        glslcHpp("shader.frag", "build/shader.frag.hpp", "shader_frag_code"),
+        glslcHpp("shader.vert", "build/shader.vert.hpp", "shader_vert_code"),
         0};
 
     if (needsUpdate(output, input)) {
@@ -18,7 +18,7 @@ i32 main(i32 argc, const char *argv[]) {
         addArg(&args, input[0]);
 
         auto compile_flags = loadFile("compile_flags.txt");
-        defer(free(compile_flags.ptr));
+
         addArgsFromCompileFlags(&args, compile_flags);
 
         addArg(&args, "-o");
@@ -32,6 +32,8 @@ i32 main(i32 argc, const char *argv[]) {
         addArg(&args, "-g");
 
         run(args);
+
+        free(compile_flags.ptr);
     }
 
     Args tidy_args = {};
