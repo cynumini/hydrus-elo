@@ -18,7 +18,7 @@ struct Response {
 static size_t writeResponse(char *data, [[maybe_unused]] size_t size, size_t len,
                             void *user_data) {
     auto *response = (Response *)user_data;
-    usize old_len = response->data.len;
+    const usize old_len = response->data.len;
     response->data = response->arena->realloc(response->data, response->data.len + len);
     memcpy(&response->data[old_len], data, len);
     return len;
@@ -60,9 +60,16 @@ struct State {
     Array<SDL_GPUTextureSamplerBinding, MAX_TEXTURE_SAMPLERS> texture_sampler_bindings;
 };
 
+Slice<u8> request(CURL *curl, Response *response, const char *url) {
+    response->data = {};
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_perform(curl);
+    return response->data;
+}
+
 static State state;
 
-SDL_AppResult SDL_AppInit(void **appstate, [[maybe_unused]] i32 argc,
+SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32 argc,
                           [[maybe_unused]] char *argv[]) {
     state.ctx.global.init(128);
     state.ctx.frame.init(1);
@@ -205,74 +212,102 @@ SDL_AppResult SDL_AppInit(void **appstate, [[maybe_unused]] i32 argc,
               "load font texture");
 
     {
-        ScopeArena scope(&state.ctx.scratch);
+        const ScopeArena scope(&state.ctx.scratch);
         auto *curl = curl_easy_init();
         SDL_CHECK(curl, "curl easy init");
+        defer(curl_easy_cleanup(curl));
 
         struct curl_slist *slist = 0;
+        defer(curl_slist_free_all(slist));
 
-        auto buffer = allocFormatSentinel(&state.ctx.global, "Hydrus-Client-API-Access-Key: %s",
-                                          SDL_getenv("HYDRUS_CLIENT_API"));
+        auto buffer = state.ctx.global.allocFormatZ("Hydrus-Client-API-Access-Key: %s",
+                                                    SDL_getenv("HYDRUS_CLIENT_API"));
         slist = curl_slist_append(slist, buffer.ptr);
         SDL_assert(slist);
 
-        // TODO: https://curl.se/libcurl/c/curl_easy_escape.html for tags
-        // TODO: check different amount of tags start from less than one, until find less tag with
-        // rating = 1100
-        curl_easy_setopt(
-            curl, CURLOPT_URL,
-            "http://127.0.0.1:45869/get_files/"
-            "search_files?tags=%5B%22system%3Acount%20for%20elo%20more%20than%201100%22%"
-            "2C%20%22system%3Anumber%20of%20tags%20%3C%204%22%5D");
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
+        // TODO: check different amount of tags start from less than
+        // one, until find less tag with rating = 1100
 
         Response response = {.arena = scope.arena};
 
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeResponse);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
+        // get files - search files
+        Slice<u8> result;
+        {
+            String string;
+            const u32 elo = 1100;
+            auto *tags = cJSON_CreateArray();
+            // json
+            auto tag = scope.arena->allocFormatZ("system:count for elo more than %u", elo);
+            cJSON_AddItemToArray(tags, cJSON_CreateString(tag.ptr));
+            cJSON_AddItemToArray(tags, cJSON_CreateString("system:number of tags < 4"));
+            string = scope.arena->dupeAndFree(cJSON_Print(tags));
+            cJSON_Delete(tags);
+            // escape
+            string = scope.arena->dupeAndFreeZ(
+                curl_easy_escape(curl, string.ptr, (int)string.len), curl_free);
+            // url
+            string = scope.arena->allocFormatZ(
+                "http://127.0.0.1:45869/get_files/search_files?tags=%s", string.ptr);
+            // set
 
-        curl_easy_perform(curl);
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
 
-        auto *json = cJSON_ParseWithLength((char *)response.data.ptr, response.data.len);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeResponse);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
+
+            result = request(curl, &response, string.ptr);
+        }
+
+        auto *json = cJSON_ParseWithLength((char *)result.ptr, result.len);
+        defer(cJSON_Delete(json));
         SDL_assert(json);
 
         const cJSON *file_ids = cJSON_GetObjectItemCaseSensitive(json, "file_ids");
 
         SDL_assert(file_ids);
 
-        const cJSON *file_id = NULL;
-        cJSON_ArrayForEach(file_id, file_ids) {
-            // SDL_free(response.data.ptr);
+        usize file_id = 0;
 
-            SDL_assert(cJSON_IsNumber(file_id));
-            SDL_Log("file_id: %d", file_id->valueint);
-
-            response.data = {};
-
-            auto buffer = allocFormatSentinel(
-                scope.arena, "http://127.0.0.1:45869/get_files/render?file_id=%d",
-                file_id->valueint);
-            curl_easy_setopt(curl, CURLOPT_URL, buffer);
-
-            curl_easy_perform(curl);
-
-            SDL_CHECK(Texture::load(state.device, copy_pass, response.data, &state.image_texture),
-                      "load image texture");
+        const cJSON *file_id_cjson = NULL;
+        cJSON_ArrayForEach(file_id_cjson, file_ids) {
+            SDL_assert(cJSON_IsNumber(file_id_cjson));
+            file_id = file_id_cjson->valueint;
             break; // TODO: choose image based on elo rating instead of choosing first one
         }
 
-        // TODO copy file link to clipboard
+        SDL_assert(file_id);
+        SDL_Log("file_id: %lu", file_id);
+
+        {
+            auto string = scope.arena->allocFormatZ(
+                "http://127.0.0.1:45869/get_files/render?file_id=%d", file_id_cjson->valueint);
+
+            auto result = request(curl, &response, string.ptr);
+
+            SDL_CHECK(Texture::load(state.device, copy_pass, result, &state.image_texture),
+                      "load image texture");
+        }
+
+        // get file path
+        {
+            const String string = scope.arena->allocFormatZ(
+                "http://127.0.0.1:45869/get_files/file_path?file_id=%lu", file_id);
+            auto result = request(curl, &response, string.ptr);
+
+            auto *json = cJSON_ParseWithLength((char *)result.ptr, result.len);
+            defer(cJSON_Delete(json));
+
+            auto *key = cJSON_GetObjectItemCaseSensitive(json, "path");
+            auto *value = cJSON_GetStringValue(key);
+
+            // TODO copy file link to clipboard
+        }
+
         // TODO input box for text
         // TODO check how to get list of all possible tags
         // TODO check if I can create parent tags and alias
         // TODO i need something like config file, that provide list of tags I check
-
-
-        cJSON_Delete(json);
-        curl_slist_free_all(slist);
-        curl_easy_cleanup(curl);
     }
-
     SDL_EndGPUCopyPass(copy_pass);
     SDL_SubmitGPUCommandBuffer(command_buffer);
 
@@ -295,7 +330,7 @@ SDL_AppResult SDL_AppEvent([[maybe_unused]] void *appstate, SDL_Event *event) {
     return SDL_APP_CONTINUE;
 }
 
-SDL_AppResult SDL_AppIterate(void *appstate) {
+SDL_AppResult SDL_AppIterate([[maybe_unused]] void *appstate) {
     auto *command_buffer = SDL_AcquireGPUCommandBuffer(state.device);
     SDL_CHECK(command_buffer, "acquire gpu command buffer");
 
@@ -308,10 +343,9 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
                 state.device, state.instance_transfer_buffer, true);
             SDL_CHECK(instances_raw, "map gpu transfer buffer");
 
-            // instances_len = gameUpdate({instances_raw, MAX_INSTANCES});
-
-            f32 scale = f32(state.screen.y) / state.image_texture.size.y;
-            instances_raw[0] = {{0, 0}, {state.image_texture.size.x * scale, f32(state.screen.y)}, 1};
+            const f32 scale = f32(state.screen.y) / f32(state.image_texture.size.y);
+            instances_raw[0] = {
+                {0, 0}, {f32(state.image_texture.size.x) * scale, f32(state.screen.y)}, 1};
             instances_len = 1;
 
             SDL_CHECK(instances_len <= MAX_INSTANCES, "too many instances");
@@ -372,7 +406,7 @@ SDL_AppResult SDL_AppIterate(void *appstate) {
     return SDL_APP_CONTINUE;
 }
 
-void SDL_AppQuit(void *appstate, [[maybe_unused]] SDL_AppResult result) {
+void SDL_AppQuit([[maybe_unused]] void *appstate, [[maybe_unused]] SDL_AppResult result) {
     state.ctx.global.deinit();
     state.ctx.frame.deinit();
     state.ctx.scratch.deinit();
