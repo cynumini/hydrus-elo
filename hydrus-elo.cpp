@@ -18,7 +18,7 @@ struct Response {
 static size_t writeResponse(char *data, [[maybe_unused]] size_t size, size_t len,
                             void *user_data) {
     auto *response = (Response *)user_data;
-    const usize old_len = response->data.len;
+    const size_t old_len = response->data.len;
     response->data = response->arena->realloc(response->data, response->data.len + len);
     memcpy(&response->data[old_len], data, len);
     return len;
@@ -32,14 +32,7 @@ struct Instance {
     u32 texture_index;
 };
 
-struct Context {
-    Arena global;
-    Arena frame;
-    Arena scratch;
-};
-
 struct State {
-    Context ctx;
 
     ivec2 screen;
 
@@ -69,46 +62,48 @@ Slice<u8> request(CURL *curl, Response *response, const char *url) {
 
 static State state;
 
+Arena global;
+Arena frame;
+Arena scratch;
+
 SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32 argc,
                           [[maybe_unused]] char *argv[]) {
-    state.ctx.global.init(128);
-    state.ctx.frame.init(1);
-    state.ctx.scratch.init(MB(3));
+    global.init(128);
+    frame.init(1);
+    scratch.init(MB(5));
 
     const char *name = "hydrus-elo";
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
     SDL_SetAppMetadata(name, "0.1.0", "cynumini.hydrus-elo");
-    SDL_CHECK(SDL_Init(SDL_INIT_VIDEO), "initialize SDL");
+    SDL_CHECK(SDL_Init(SDL_INIT_VIDEO));
 
     state.screen = {1280, 720};
     state.window = SDL_CreateWindow(name, state.screen.x, state.screen.y, 0);
-    SDL_CHECK(state.window, "create window");
+    SDL_CHECK(state.window);
 
     state.device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, true, 0);
-    SDL_CHECK(state.device, "create gpu device");
+    SDL_CHECK(state.device);
 
-    SDL_CHECK(SDL_ClaimWindowForGPUDevice(state.device, state.window),
-              "claim window for gpu device");
+    SDL_CHECK(SDL_ClaimWindowForGPUDevice(state.device, state.window));
 
     {
         const SDL_GPUSamplerCreateInfo createinfo{};
         state.sampler = SDL_CreateGPUSampler(state.device, &createinfo);
-        SDL_CHECK(state.sampler, "create gpu sampler")
+        SDL_CHECK(state.sampler);
     }
 
-    SDL_CHECK(Texture::create(state.device, {1, 1}, &state.default_texture),
-              "create gpu texture");
+    SDL_CHECK(Texture::create(state.device, {1, 1}, &state.default_texture));
 
     {
         SDL_GPUGraphicsPipelineCreateInfo createinfo = {};
         createinfo.vertex_shader =
             createGPUShader(state.device, shader_vert_code, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
-        SDL_CHECK(createinfo.vertex_shader, "create gpu vertex shader");
+        SDL_CHECK(createinfo.vertex_shader);
 
         createinfo.fragment_shader =
             createGPUShader(state.device, shader_frag_code, SDL_GPU_SHADERSTAGE_FRAGMENT,
                             MAX_TEXTURE_SAMPLERS, 0);
-        SDL_CHECK(createinfo.fragment_shader, "create gpu fragment shader");
+        SDL_CHECK(createinfo.fragment_shader);
 
         const SDL_GPUVertexBufferDescription vertex_buffer_descriptions[] = {
             {0, sizeof(vec2), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0},
@@ -147,7 +142,7 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
         SDL_ReleaseGPUShader(state.device, createinfo.vertex_shader);
         SDL_ReleaseGPUShader(state.device, createinfo.fragment_shader);
 
-        SDL_CHECK(state.pipeline, "create gpu graphics pipeline");
+        SDL_CHECK(state.pipeline);
     }
 
     vec2 vertices[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
@@ -155,28 +150,28 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
 
     state.vertex_buffer =
         createGPUBuffer(state.device, SDL_GPU_BUFFERUSAGE_VERTEX, sizeof(vertices));
-    SDL_CHECK(state.vertex_buffer, "create vertex buffer");
+    SDL_CHECK(state.vertex_buffer);
 
     state.index_buffer =
         createGPUBuffer(state.device, SDL_GPU_BUFFERUSAGE_INDEX, sizeof(indices));
-    SDL_CHECK(state.index_buffer, "create index buffer");
+    SDL_CHECK(state.index_buffer);
 
     state.instance_buffer = createGPUBuffer(state.device, SDL_GPU_BUFFERUSAGE_VERTEX,
                                             sizeof(Instance) * MAX_INSTANCES);
-    SDL_CHECK(state.instance_buffer, "create instance buffer");
+    SDL_CHECK(state.instance_buffer);
 
     auto *command_buffer = SDL_AcquireGPUCommandBuffer(state.device);
-    SDL_CHECK(command_buffer, "acquire gpu command buffer");
+    SDL_CHECK(command_buffer);
     auto *copy_pass = SDL_BeginGPUCopyPass(command_buffer);
 
     {
         auto *transfer_buffer = createGPUTransferBuffer(
             state.device, sizeof(Color) + sizeof(vertices) + sizeof(indices));
-        SDL_CHECK(transfer_buffer, "create gpu transfer buffer");
+        SDL_CHECK(transfer_buffer);
 
         {
             u8 *memory = (u8 *)SDL_MapGPUTransferBuffer(state.device, transfer_buffer, false);
-            SDL_CHECK(memory, "map gpu transfer buffer");
+            SDL_CHECK(memory);
 
             *(Color *)memory = WHITE;
             memory += sizeof(Color);
@@ -208,20 +203,19 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
         SDL_ReleaseGPUTransferBuffer(state.device, transfer_buffer);
     }
 
-    SDL_CHECK(Texture::load(state.device, copy_pass, "font.png", &state.font_texture),
-              "load font texture");
+    SDL_CHECK(Texture::load(state.device, copy_pass, "font.png", &state.font_texture));
 
     {
-        const ScopeArena scope(&state.ctx.scratch);
+        ScopeArena scope(&scratch);
         auto *curl = curl_easy_init();
-        SDL_CHECK(curl, "curl easy init");
+        SDL_CHECK(curl);
         defer(curl_easy_cleanup(curl));
 
         struct curl_slist *slist = 0;
         defer(curl_slist_free_all(slist));
 
-        auto buffer = state.ctx.global.allocFormatZ("Hydrus-Client-API-Access-Key: %s",
-                                                    SDL_getenv("HYDRUS_CLIENT_API"));
+        auto buffer = global.allocPrintZ("Hydrus-Client-API-Access-Key: %s",
+                                         SDL_getenv("HYDRUS_CLIENT_API"));
         slist = curl_slist_append(slist, buffer.ptr);
         SDL_assert(slist);
 
@@ -233,20 +227,20 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
         // get files - search files
         Slice<u8> result;
         {
-            String string;
+            SliceZ<char> string;
             const u32 elo = 1100;
             auto *tags = cJSON_CreateArray();
             // json
-            auto tag = scope.arena->allocFormatZ("system:count for elo more than %u", elo);
+            auto tag = scope.tmp.allocPrintZ("system:count for elo more than %u", elo);
             cJSON_AddItemToArray(tags, cJSON_CreateString(tag.ptr));
             cJSON_AddItemToArray(tags, cJSON_CreateString("system:number of tags < 4"));
-            string = scope.arena->dupeAndFree(cJSON_Print(tags));
+            string = scope.tmp.dupeAndFreeZ(cJSON_Print(tags));
             cJSON_Delete(tags);
             // escape
-            string = scope.arena->dupeAndFreeZ(
-                curl_easy_escape(curl, string.ptr, (int)string.len), curl_free);
+            string = scope.tmp.dupeAndFreeZ(curl_easy_escape(curl, string.ptr, (int)string.len),
+                                            curl_free);
             // url
-            string = scope.arena->allocFormatZ(
+            string = scope.tmp.allocPrintZ(
                 "http://127.0.0.1:45869/get_files/search_files?tags=%s", string.ptr);
             // set
 
@@ -266,7 +260,7 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
 
         SDL_assert(file_ids);
 
-        usize file_id = 0;
+        size_t file_id = 0;
 
         const cJSON *file_id_cjson = NULL;
         cJSON_ArrayForEach(file_id_cjson, file_ids) {
@@ -279,18 +273,17 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
         SDL_Log("file_id: %lu", file_id);
 
         {
-            auto string = scope.arena->allocFormatZ(
+            auto string = scope.tmp.allocPrintZ(
                 "http://127.0.0.1:45869/get_files/render?file_id=%d", file_id_cjson->valueint);
 
             auto result = request(curl, &response, string.ptr);
 
-            SDL_CHECK(Texture::load(state.device, copy_pass, result, &state.image_texture),
-                      "load image texture");
+            SDL_CHECK(Texture::load(state.device, copy_pass, result, &state.image_texture));
         }
 
         // get file path
         {
-            const String string = scope.arena->allocFormatZ(
+            auto string = scope.tmp.allocPrintZ(
                 "http://127.0.0.1:45869/get_files/file_path?file_id=%lu", file_id);
             auto result = request(curl, &response, string.ptr);
 
@@ -313,7 +306,7 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
 
     state.instance_transfer_buffer =
         createGPUTransferBuffer(state.device, sizeof(Instance) * MAX_INSTANCES);
-    SDL_CHECK(state.instance_transfer_buffer, "create gpu transfer buffer");
+    SDL_CHECK(state.instance_transfer_buffer);
 
     for (uint i = 0; i < MAX_TEXTURE_SAMPLERS; i++) {
         state.texture_sampler_bindings[i].texture = state.default_texture.ptr;
@@ -332,7 +325,7 @@ SDL_AppResult SDL_AppEvent([[maybe_unused]] void *appstate, SDL_Event *event) {
 
 SDL_AppResult SDL_AppIterate([[maybe_unused]] void *appstate) {
     auto *command_buffer = SDL_AcquireGPUCommandBuffer(state.device);
-    SDL_CHECK(command_buffer, "acquire gpu command buffer");
+    SDL_CHECK(command_buffer);
 
     uint instances_len = 0;
 
@@ -341,14 +334,14 @@ SDL_AppResult SDL_AppIterate([[maybe_unused]] void *appstate) {
         {
             Instance *instances_raw = (Instance *)SDL_MapGPUTransferBuffer(
                 state.device, state.instance_transfer_buffer, true);
-            SDL_CHECK(instances_raw, "map gpu transfer buffer");
+            SDL_CHECK(instances_raw);
 
-            const f32 scale = f32(state.screen.y) / f32(state.image_texture.size.y);
+            const float scale = float(state.screen.y) / float(state.image_texture.size.y);
             instances_raw[0] = {
-                {0, 0}, {f32(state.image_texture.size.x) * scale, f32(state.screen.y)}, 1};
+                {0, 0}, {float(state.image_texture.size.x) * scale, float(state.screen.y)}, 1};
             instances_len = 1;
 
-            SDL_CHECK(instances_len <= MAX_INSTANCES, "too many instances");
+            SDL_CHECK(instances_len <= MAX_INSTANCES);
 
             SDL_UnmapGPUTransferBuffer(state.device, state.instance_transfer_buffer);
         }
@@ -361,17 +354,17 @@ SDL_AppResult SDL_AppIterate([[maybe_unused]] void *appstate) {
     SDL_GPUTexture *swapchain_texture = 0;
 
     SDL_CHECK(SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, state.window,
-                                                    &swapchain_texture, 0, 0),
-              "wait and acquire gpu swapchain texture");
+                                                    &swapchain_texture, 0, 0));
 
     if (swapchain_texture) {
         SDL_GPUColorTargetInfo color_target_info = {};
         color_target_info.texture = swapchain_texture;
-        const FColor clear_color = toFColor(GRAY);
-        color_target_info.clear_color.r = clear_color.r;
-        color_target_info.clear_color.g = clear_color.g;
-        color_target_info.clear_color.b = clear_color.b;
-        color_target_info.clear_color.a = clear_color.a;
+        color_target_info.clear_color = {
+            .r = float(GRAY.r) / 255.0F,
+            .g = float(GRAY.g) / 255.0F,
+            .b = float(GRAY.b) / 255.0F,
+            .a = float(GRAY.a) / 255.0F,
+        };
         color_target_info.load_op = SDL_GPU_LOADOP_CLEAR;
         color_target_info.store_op = SDL_GPU_STOREOP_STORE;
         auto *render_pass = SDL_BeginGPURenderPass(command_buffer, &color_target_info, 1, 0);
@@ -407,9 +400,9 @@ SDL_AppResult SDL_AppIterate([[maybe_unused]] void *appstate) {
 }
 
 void SDL_AppQuit([[maybe_unused]] void *appstate, [[maybe_unused]] SDL_AppResult result) {
-    state.ctx.global.deinit();
-    state.ctx.frame.deinit();
-    state.ctx.scratch.deinit();
+    global.deinit();
+    frame.deinit();
+    scratch.deinit();
 
     SDL_ReleaseGPUTexture(state.device, state.default_texture.ptr);
     SDL_ReleaseGPUTexture(state.device, state.font_texture.ptr);
