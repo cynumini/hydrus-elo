@@ -12,7 +12,7 @@
 
 struct Response {
     Arena *arena;
-    Slice<u8> data;
+    Slice<char> data;
 };
 
 static size_t writeResponse(char *data, [[maybe_unused]] size_t size, size_t len,
@@ -29,7 +29,7 @@ const uint MAX_INSTANCES = 1U << 2U; // 4
 struct Instance {
     vec2 position;
     vec2 size;
-    u32 texture_index;
+    uint texture_index;
 };
 
 struct State {
@@ -53,28 +53,88 @@ struct State {
     Array<SDL_GPUTextureSamplerBinding, MAX_TEXTURE_SAMPLERS> texture_sampler_bindings;
 };
 
-Slice<u8> request(CURL *curl, Response *response, const char *url) {
-    response->data = {};
+Slice<char> request(Arena *a, CURL *curl, const char *url) {
+    Response response{
+        .arena = a,
+        .data = {},
+    };
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeResponse);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_perform(curl);
-    return response->data;
+    return response.data;
 }
 
 static State state;
 
-Arena global;
-Arena frame;
-Arena scratch;
+Arena arena;
+
+Slice<char> searchFiles(Arena *a, CURL *curl) {
+    ScopeArena scope(a);
+    const uint elo = 1100;
+    const u8 number_of_tags = 5;
+
+    SliceZ<char> tags;
+    {
+        auto *json_tags = cJSON_CreateArray();
+        defer(cJSON_Delete(json_tags));
+
+        // json - elo
+        auto tag = scope.tmp.allocPrintZ("system:count for elo more than %u", elo);
+        cJSON_AddItemToArray(json_tags, cJSON_CreateString(tag.ptr));
+        scope.tmp.free(tag);
+
+        // json - tags
+        tag = scope.tmp.allocPrintZ("system:number of tags < %u", number_of_tags);
+        cJSON_AddItemToArray(json_tags, cJSON_CreateString(tag.ptr));
+        scope.tmp.free(tag);
+
+        tags = scope.tmp.dupeAndFreeZ(cJSON_Print(json_tags));
+    }
+
+    // escape
+    auto string =
+        scope.tmp.dupeAndFreeZ(curl_easy_escape(curl, tags.ptr, (int)tags.len), curl_free);
+    // url
+    string = scope.tmp.allocPrintZ("http://127.0.0.1:45869/get_files/search_files?tags=%s",
+                                   string.ptr);
+
+    return request(a, curl, string.ptr);
+}
+
+Slice<u8> render(Arena *a, CURL *curl, uint file_id) {
+    ScopeArena scope(a);
+    auto url =
+        scope.tmp.allocPrintZ("http://127.0.0.1:45869/get_files/render?file_id=%d", file_id);
+    auto result = request(a, curl, url.ptr);
+    return {result.len, (u8 *)result.ptr};
+}
+
+SliceZ<const char> getFilePath(Arena *a, CURL *curl, uint file_id) {
+    ScopeArena scope(a);
+    auto string =
+        scope.tmp.allocPrintZ("http://127.0.0.1:45869/get_files/file_path?file_id=%u", file_id);
+    auto result = request(&scope.tmp, curl, string.ptr);
+
+    auto *json = cJSON_ParseWithLength((char *)result.ptr, result.len);
+    defer(cJSON_Delete(json));
+
+    auto *key = cJSON_GetObjectItemCaseSensitive(json, "path");
+    auto *value = cJSON_GetStringValue(key);
+
+    return a->dupeConstZ(value);
+}
+
+static SliceZ<const char> file_path;
 
 SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32 argc,
                           [[maybe_unused]] char *argv[]) {
-    global.init(128);
-    frame.init(1);
-    scratch.init(MB(5));
+    arena.init(MB(10));
 
     const char *name = "hydrus-elo";
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
     SDL_SetAppMetadata(name, "0.1.0", "cynumini.hydrus-elo");
+
     SDL_CHECK(SDL_Init(SDL_INIT_VIDEO));
 
     state.screen = {1280, 720};
@@ -96,13 +156,16 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
 
     {
         SDL_GPUGraphicsPipelineCreateInfo createinfo = {};
+
         createinfo.vertex_shader =
             createGPUShader(state.device, shader_vert_code, SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
+        defer(SDL_ReleaseGPUShader(state.device, createinfo.vertex_shader));
         SDL_CHECK(createinfo.vertex_shader);
 
         createinfo.fragment_shader =
             createGPUShader(state.device, shader_frag_code, SDL_GPU_SHADERSTAGE_FRAGMENT,
                             MAX_TEXTURE_SAMPLERS, 0);
+        defer(SDL_ReleaseGPUShader(state.device, createinfo.fragment_shader));
         SDL_CHECK(createinfo.fragment_shader);
 
         const SDL_GPUVertexBufferDescription vertex_buffer_descriptions[] = {
@@ -138,12 +201,8 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
         createinfo.target_info.color_target_descriptions = &color_target_description;
         createinfo.target_info.num_color_targets = 1;
         state.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &createinfo);
-
-        SDL_ReleaseGPUShader(state.device, createinfo.vertex_shader);
-        SDL_ReleaseGPUShader(state.device, createinfo.fragment_shader);
-
-        SDL_CHECK(state.pipeline);
     }
+    SDL_CHECK(state.pipeline);
 
     vec2 vertices[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
     i16 indices[6]{0, 1, 2, 0, 2, 3};
@@ -167,6 +226,7 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
     {
         auto *transfer_buffer = createGPUTransferBuffer(
             state.device, sizeof(Color) + sizeof(vertices) + sizeof(indices));
+        defer(SDL_ReleaseGPUTransferBuffer(state.device, transfer_buffer));
         SDL_CHECK(transfer_buffer);
 
         {
@@ -184,80 +244,44 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
             SDL_UnmapGPUTransferBuffer(state.device, transfer_buffer);
         }
 
-        {
-            SDL_GPUTextureTransferInfo source = {};
-            source.transfer_buffer = transfer_buffer;
-            SDL_GPUTextureRegion destination = {};
-            destination.texture = state.default_texture.ptr;
-            destination.w = 1;
-            destination.h = 1;
-            destination.d = 1;
-            SDL_UploadToGPUTexture(copy_pass, &source, &destination, false);
-        }
-
+        state.default_texture.uploadToGPU(copy_pass, transfer_buffer, {.w = 1, .h = 1});
         uploadToGPUBuffer(copy_pass, transfer_buffer, sizeof(Color), state.vertex_buffer,
                           sizeof(vertices));
         uploadToGPUBuffer(copy_pass, transfer_buffer, sizeof(Color) + sizeof(vertices),
                           state.index_buffer, sizeof(indices));
-
-        SDL_ReleaseGPUTransferBuffer(state.device, transfer_buffer);
     }
 
     SDL_CHECK(Texture::load(state.device, copy_pass, "font.png", &state.font_texture));
 
     {
-        ScopeArena scope(&scratch);
+        ScopeArena scope(&arena);
         auto *curl = curl_easy_init();
-        SDL_CHECK(curl);
         defer(curl_easy_cleanup(curl));
+        SDL_assert(curl);
 
         struct curl_slist *slist = 0;
         defer(curl_slist_free_all(slist));
 
-        auto buffer = global.allocPrintZ("Hydrus-Client-API-Access-Key: %s",
-                                         SDL_getenv("HYDRUS_CLIENT_API"));
-        slist = curl_slist_append(slist, buffer.ptr);
+        auto header = scope.tmp.allocPrintZ("Hydrus-Client-API-Access-Key: %s",
+                                            SDL_getenv("HYDRUS_CLIENT_API"));
+        slist = curl_slist_append(slist, header.ptr);
         SDL_assert(slist);
+
+        // set
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
 
         // TODO: check different amount of tags start from less than
         // one, until find less tag with rating = 1100
 
-        Response response = {.arena = scope.arena};
+        auto result = searchFiles(&scope.tmp, curl);
 
-        // get files - search files
-        Slice<u8> result;
-        {
-            SliceZ<char> string;
-            const u32 elo = 1100;
-            auto *tags = cJSON_CreateArray();
-            // json
-            auto tag = scope.tmp.allocPrintZ("system:count for elo more than %u", elo);
-            cJSON_AddItemToArray(tags, cJSON_CreateString(tag.ptr));
-            cJSON_AddItemToArray(tags, cJSON_CreateString("system:number of tags < 4"));
-            string = scope.tmp.dupeAndFreeZ(cJSON_Print(tags));
-            cJSON_Delete(tags);
-            // escape
-            string = scope.tmp.dupeAndFreeZ(curl_easy_escape(curl, string.ptr, (int)string.len),
-                                            curl_free);
-            // url
-            string = scope.tmp.allocPrintZ(
-                "http://127.0.0.1:45869/get_files/search_files?tags=%s", string.ptr);
-            // set
-
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
-
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeResponse);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
-
-            result = request(curl, &response, string.ptr);
-        }
-
-        auto *json = cJSON_ParseWithLength((char *)result.ptr, result.len);
+        auto *json = cJSON_ParseWithLength(result.ptr, result.len);
         defer(cJSON_Delete(json));
         SDL_assert(json);
 
-        const cJSON *file_ids = cJSON_GetObjectItemCaseSensitive(json, "file_ids");
+        scope.tmp.free(result);
 
+        const cJSON *file_ids = cJSON_GetObjectItemCaseSensitive(json, "file_ids");
         SDL_assert(file_ids);
 
         size_t file_id = 0;
@@ -272,29 +296,13 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
         SDL_assert(file_id);
         SDL_Log("file_id: %lu", file_id);
 
-        {
-            auto string = scope.tmp.allocPrintZ(
-                "http://127.0.0.1:45869/get_files/render?file_id=%d", file_id_cjson->valueint);
+        auto image = render(&scope.tmp, curl, file_id_cjson->valueint);
+        SDL_CHECK(Texture::load(state.device, copy_pass, image, &state.image_texture));
+        scope.tmp.free(image);
 
-            auto result = request(curl, &response, string.ptr);
-
-            SDL_CHECK(Texture::load(state.device, copy_pass, result, &state.image_texture));
-        }
-
-        // get file path
-        {
-            auto string = scope.tmp.allocPrintZ(
-                "http://127.0.0.1:45869/get_files/file_path?file_id=%lu", file_id);
-            auto result = request(curl, &response, string.ptr);
-
-            auto *json = cJSON_ParseWithLength((char *)result.ptr, result.len);
-            defer(cJSON_Delete(json));
-
-            auto *key = cJSON_GetObjectItemCaseSensitive(json, "path");
-            auto *value = cJSON_GetStringValue(key);
-
-            // TODO copy file link to clipboard
-        }
+        // SDL_Log("%zu", arena.next_position);
+        file_path = getFilePath(&arena, curl, file_id);
+        // SDL_Log("%zu", arena.next_position);
 
         // TODO input box for text
         // TODO check how to get list of all possible tags
@@ -317,8 +325,22 @@ SDL_AppResult SDL_AppInit([[maybe_unused]] void **appstate, [[maybe_unused]] i32
 }
 
 SDL_AppResult SDL_AppEvent([[maybe_unused]] void *appstate, SDL_Event *event) {
-    if (event->type == SDL_EVENT_QUIT) {
+    switch (event->type) {
+    case SDL_EVENT_QUIT: {
         return SDL_APP_SUCCESS;
+    }
+    case SDL_EVENT_KEY_DOWN: {
+        if (event->key.scancode == SDL_SCANCODE_C and (event->key.mod & SDL_KMOD_CTRL)) {
+            SDL_SetClipboardText(file_path.ptr);
+        }
+        if (event->key.scancode = SDL_SCANCODE_ESCAPE) {
+            return SDL_APP_SUCCESS;
+        }
+        break;
+    }
+    default: {
+        break;
+    }
     }
     return SDL_APP_CONTINUE;
 }
@@ -400,9 +422,7 @@ SDL_AppResult SDL_AppIterate([[maybe_unused]] void *appstate) {
 }
 
 void SDL_AppQuit([[maybe_unused]] void *appstate, [[maybe_unused]] SDL_AppResult result) {
-    global.deinit();
-    frame.deinit();
-    scratch.deinit();
+    arena.deinit();
 
     SDL_ReleaseGPUTexture(state.device, state.default_texture.ptr);
     SDL_ReleaseGPUTexture(state.device, state.font_texture.ptr);
