@@ -1,0 +1,10 @@
+{
+	"description": "A program for ranking images by personal preference using an Elo rating system.",
+	"license": "BSD-1-Clause",
+	"authors": [
+		"cynumini"
+	],
+	"copyright": "Copyright © 2026, cynumini",
+	"name": "hydrus-elo",
+    "lflags": ["-lSDL3"]
+}
