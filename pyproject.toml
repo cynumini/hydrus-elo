@@ -7,7 +7,10 @@ authors = [
     { name = "cynumini", email = "cynumini@proton.me" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "hydrus-api>=5.3.0",
+    "pyside6>=6.12.0",
+]
 
 [project.scripts]
 hydrus-elo = "hydrus_elo:main"
@@ -15,3 +18,12 @@ hydrus-elo = "hydrus_elo:main"
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.40.2",
+    "ruff>=0.17.0",
+]
+
+[tool.basedpyright]
+reportExplicitAny = false
