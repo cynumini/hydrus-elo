@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWizard,
 )
 
+from hydrus_elo.elo import RanksStrategy
 from hydrus_elo.hydrus import Hydrus
 from hydrus_elo.league import League
 from hydrus_elo.play import Play, Strategy
@@ -42,7 +43,13 @@ def main() -> None:
 
         match command:
             case Command.RANKS:
-                play.play(Strategy.RANKS, games_per_rank)
+                play.play(RanksStrategy(games_per_rank))
+            case command.PROMOS:
+                assert(False)
+            case command.SEASON:
+                assert(False)
+            case command.PLAYER:
+                assert(False)
 
         sys.exit(app.exec())
     else:

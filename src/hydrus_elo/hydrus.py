@@ -37,6 +37,13 @@ class Hydrus:
             self.load_service_key()
         return self.elo_service_key
 
+    def render(
+        self, id: int, render_format: hydrus_api.RenderFormat, size: tuple[int, int]
+    ):
+        return self.client.get_render(
+            file_id=id, width=size[0], height=size[1], render_format=render_format
+        ).content
+
     def get_files(self, ids: list[int], league_name: str) -> list[File]:
         elo_service_key = self.get_elo_service_key()
         league_service_key = self.league_service_keys[league_name]
