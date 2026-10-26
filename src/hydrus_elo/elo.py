@@ -1,7 +1,8 @@
+import math
 import random
 from dataclasses import dataclass
 from enum import Enum, IntEnum, auto
-from typing import cast
+from typing import ClassVar, cast
 
 
 @dataclass
@@ -31,6 +32,30 @@ class Rank(IntEnum):
     GOLD = 4
     DIAMOND = 5
     WINNER = 6
+
+    MaxLeagueLen: ClassVar[int]
+
+
+    def max(self):
+        match self:
+            case Rank.UNRANKED:
+                return 0
+            case Rank.WOOD:
+                return 128
+            case Rank.STONE:
+                return 64
+            case Rank.IRON:
+                return 32
+            case Rank.GOLD:
+                return 16
+            case Rank.DIAMOND:
+                return 8
+            case Rank.WINNER:
+                return 1
+
+Rank.MaxLeagueLen = sum(
+    rank.max() for rank in Rank if rank != Rank.UNRANKED
+)
 
 
 @dataclass
@@ -124,7 +149,7 @@ class Elo:
         return self.current_data[index].elo
 
     def get_rank(self, index: int) -> Rank:
-        return self.current_data[index].rank;
+        return self.current_data[index].rank
 
     def get_stronger(self, player_id: int, possible_players: list[int]) -> int | None:
         candidates = [
@@ -203,7 +228,7 @@ class Elo:
 
     def set_elo(self, index: int, value: int):
         id = self.get_id(index)
-        self.current_data[index].elo = value;
+        self.current_data[index].elo = value
         self.result[id] = self.current_data[index]
 
     def set_rank(self, index: int, value: Rank):
@@ -212,9 +237,9 @@ class Elo:
         self.result[id] = self.current_data[index]
 
     def get_action(self):
-        return self.actions[self.position];
+        return self.actions[self.position]
 
-    def act(self, user_input: UserInput, action: Action) -> tuple[int, int] | None: 
+    def act(self, user_input: UserInput, action: Action) -> tuple[int, int] | None:
         match user_input:
             case UserInput.WIN | UserInput.LOSE | UserInput.DRAW:
                 assert isinstance(action, Match)
@@ -224,7 +249,9 @@ class Elo:
                 r = play_int(action.p1_elo, action.p2_elo, action.score, 32)
                 self.set_elo(action.player1, r[0])
                 self.set_elo(action.player2, r[1])
-                if action.score == Score.LOSE and isinstance(self.strategy, PromosStrategy):
+                if action.score == Score.LOSE and isinstance(
+                    self.strategy, PromosStrategy
+                ):
                     rank1 = self.get_rank(action.player1)
                     rank2 = self.get_rank(action.player1)
                     self.set_rank(action.player1, rank2)
@@ -237,31 +264,35 @@ class Elo:
                 while True:
                     if self.position > 0:
                         self.position -= 1
-                        a: Action = self.get_action();
+                        a: Action = self.get_action()
                         if not a:
                             break
                         if isinstance(a, Match):
-                            self.set_elo(a.player1, cast(int, a.p1_elo));
-                            self.set_elo(a.player2, cast(int, a.p2_elo));
+                            self.set_elo(a.player1, cast(int, a.p1_elo))
+                            self.set_elo(a.player2, cast(int, a.p2_elo))
                         else:
                             continue
                         break
                     break
         return None
 
-
-    def get_chosen_ids(self, include_promos: bool) -> set[int]:
-        result: set[int] = set()
+    def get_chosen_ids(self, include_promos: bool) -> list[int]:
+        result: list[int] = []
         for action in self.actions:
             match action:
                 case Rank():
                     pass
                 case Match():
-                    result.add(self.get_id(action.player1))
-                    result.add(self.get_id(action.player2))
+                    for player in (action.player1, action.player2):
+                        id = self.get_id(player)
+                        if id not in result:
+                            result.append(id)
                 case Promotion():
                     if include_promos:
-                        result.add(self.get_id(action.player))
+                        id = self.get_id(action.player)
+                        if id not in result:
+                            result.append(id)
+
         return result
 
     def print_queue(self):

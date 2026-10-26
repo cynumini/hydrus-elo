@@ -70,3 +70,13 @@ class Hydrus:
             files.append(file)
 
         return files
+
+    def set_elo(self, id: int, elo: int):
+        assert self.elo_service_key
+        self.client.set_rating(self.elo_service_key, elo, file_ids=[id])
+
+    def set_league(self, id: int, league_name: str, rank: Rank):
+        value = int(rank) if rank != Rank.UNRANKED else None
+        self.client.set_rating(
+            self.league_service_keys[league_name], value, file_ids=[id]
+        )

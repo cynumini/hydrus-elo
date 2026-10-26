@@ -4,6 +4,7 @@ from typing import override
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
+    QLabel,
     QRadioButton,
     QSpinBox,
     QVBoxLayout,
@@ -23,7 +24,8 @@ class Command(StrEnum):
 
 class Page(Enum):
     COMMAND = auto()
-    RANK = auto()
+    RANKS_AND_SEASON = auto()
+    FINISH = auto()
 
 
 class CommandPage(QWizardPage):
@@ -51,10 +53,21 @@ class CommandPage(QWizardPage):
 
     @override
     def nextId(self) -> int:
-        return Page.RANK.value
+        button = self.group.checkedButton()
+        assert button
+
+        match Command(button.text()):
+            case Command.RANKS:
+                return Page.RANKS_AND_SEASON.value
+            case Command.SEASON:
+                return Page.RANKS_AND_SEASON.value
+            case Command.PROMOS:
+                return Page.FINISH.value
+            case Command.PLAYER:
+                assert False
 
     @override
-    def validatePage(self):
+    def validatePage(self) -> bool:
         button = self.group.checkedButton()
         if not button:
             return False
@@ -62,10 +75,9 @@ class CommandPage(QWizardPage):
         return True
 
 
-class RankPage(QWizardPage):
+class RankAndSeasonPage(QWizardPage):
     def __init__(self, league: League):
         super().__init__()
-        self.setTitle("Rank")
 
         layout = QVBoxLayout(self)
 
@@ -81,8 +93,26 @@ class RankPage(QWizardPage):
         self.registerField("games_per_rank", self.games_per_rank)
 
     @override
+    def initializePage(self):
+        match Command(self.wizard().property("command")):
+            case Command.RANKS:
+                self.setTitle("Ranks")
+            case Command.SEASON:
+                self.setTitle("Season")
+            case _:
+                pass
+
+    @override
     def nextId(self) -> int:
-        return -1
+        return Page.FINISH.value
+
+
+class FinishPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Done")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("You're all set!"))
 
 
 class Wizard(QWizard):
@@ -91,4 +121,5 @@ class Wizard(QWizard):
         self.setWindowTitle("hydrus-elo")
 
         self.setPage(Page.COMMAND.value, CommandPage())
-        self.setPage(Page.RANK.value, RankPage(league))
+        self.setPage(Page.RANKS_AND_SEASON.value, RankAndSeasonPage(league))
+        self.setPage(Page.FINISH.value, FinishPage())
