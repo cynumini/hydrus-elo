@@ -1,4 +1,4 @@
-from enum import Enum, StrEnum, auto
+from enum import Enum, IntEnum, StrEnum, auto
 from typing import override
 
 from PySide6.QtWidgets import (
@@ -22,9 +22,10 @@ class Command(StrEnum):
     PLAYER = "Player"
 
 
-class Page(Enum):
+class Page(IntEnum):
     COMMAND = auto()
     RANKS_AND_SEASON = auto()
+    PLAYER = auto()
     FINISH = auto()
 
 
@@ -64,7 +65,7 @@ class CommandPage(QWizardPage):
             case Command.PROMOS:
                 return Page.FINISH.value
             case Command.PLAYER:
-                assert False
+                return Page.PLAYER.value
 
     @override
     def validatePage(self) -> bool:
@@ -107,6 +108,27 @@ class RankAndSeasonPage(QWizardPage):
         return Page.FINISH.value
 
 
+class PlayerPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("Player")
+
+        layout = QVBoxLayout(self)
+
+        self.id: QSpinBox = QSpinBox(maximum=1_000_000_000)
+        self.count: QSpinBox = QSpinBox(minimum=1, value=5)
+
+        layout.addWidget(self.id)
+        layout.addWidget(self.count)
+
+        self.registerField("id", self.id)
+        self.registerField("count", self.count)
+
+    @override
+    def nextId(self) -> int:
+        return Page.FINISH.value
+
+
 class FinishPage(QWizardPage):
     def __init__(self):
         super().__init__()
@@ -123,3 +145,4 @@ class Wizard(QWizard):
         self.setPage(Page.COMMAND.value, CommandPage())
         self.setPage(Page.RANKS_AND_SEASON.value, RankAndSeasonPage(league))
         self.setPage(Page.FINISH.value, FinishPage())
+        self.setPage(Page.PLAYER.value, PlayerPage())

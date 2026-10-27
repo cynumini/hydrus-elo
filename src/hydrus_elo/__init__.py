@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWizard,
 )
 
-from hydrus_elo.elo import PromosStrategy, RanksStrategy
+from hydrus_elo.elo import PlayerStrategy, PromosStrategy, RanksStrategy
 from hydrus_elo.hydrus import Hydrus
 from hydrus_elo.league import League
 from hydrus_elo.play import Play, Strategy
@@ -45,10 +45,16 @@ def main() -> None:
             case command.PROMOS:
                 play.play(PromosStrategy())
             case command.SEASON:
-                assert(False)
+                play.play(RanksStrategy(games_per_rank))
+                play.play(PromosStrategy())
             case command.PLAYER:
-                assert(False)
+                id = cast(int, wizard.field("id"))
+                count = cast(int, wizard.field("count"))
+                play.play(PlayerStrategy(id, count))
 
         sys.exit(app.exec())
     else:
         sys.exit(0)
+
+if __name__ == "__main__":
+    main()

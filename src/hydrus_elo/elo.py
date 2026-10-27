@@ -5,72 +5,6 @@ from enum import Enum, IntEnum, auto
 from typing import ClassVar, cast
 
 
-@dataclass
-class RanksStrategy:
-    count: int
-
-
-@dataclass
-class PromosStrategy:
-    pass
-
-
-@dataclass
-class PlayerStrategy:
-    id: int
-    count: int
-
-
-Strategy = RanksStrategy | PromosStrategy | PlayerStrategy
-
-
-class Rank(IntEnum):
-    UNRANKED = 0
-    WOOD = 1
-    STONE = 2
-    IRON = 3
-    GOLD = 4
-    DIAMOND = 5
-    WINNER = 6
-
-    MaxLeagueLen: ClassVar[int]
-
-
-    def max(self):
-        match self:
-            case Rank.UNRANKED:
-                return 0
-            case Rank.WOOD:
-                return 128
-            case Rank.STONE:
-                return 64
-            case Rank.IRON:
-                return 32
-            case Rank.GOLD:
-                return 16
-            case Rank.DIAMOND:
-                return 8
-            case Rank.WINNER:
-                return 1
-
-Rank.MaxLeagueLen = sum(
-    rank.max() for rank in Rank if rank != Rank.UNRANKED
-)
-
-
-@dataclass
-class Player:
-    id: int
-    elo: int
-    rank: Rank
-
-
-@dataclass
-class Data:
-    elo: int
-    rank: Rank
-
-
 class Score(Enum):
     WIN = 1.0
     DRAW = 0.5
@@ -112,6 +46,54 @@ def play_int(rating1: int, rating2: int, score: Score, k: float) -> tuple[int, i
     return round(r[0]), round(r[1])
 
 
+class Rank(IntEnum):
+    UNRANKED = 0
+    WOOD = 1
+    STONE = 2
+    IRON = 3
+    GOLD = 4
+    DIAMOND = 5
+    WINNER = 6
+
+    MaxLeagueLen: ClassVar[int]
+
+    def max(self):
+        match self:
+            case Rank.UNRANKED:
+                return 0
+            case Rank.WOOD:
+                return 128
+            case Rank.STONE:
+                return 64
+            case Rank.IRON:
+                return 32
+            case Rank.GOLD:
+                return 16
+            case Rank.DIAMOND:
+                return 8
+            case Rank.WINNER:
+                return 1
+
+    def get_prev(self) -> Rank:
+        return Rank(self - 1)
+
+
+Rank.MaxLeagueLen = sum(rank.max() for rank in Rank if rank != Rank.UNRANKED)
+
+
+@dataclass
+class Data:
+    elo: int
+    rank: Rank
+
+
+@dataclass
+class Player:
+    id: int
+    elo: int
+    rank: Rank
+
+
 @dataclass
 class Match:
     player1: int
@@ -131,6 +113,25 @@ class Promotion:
 type Action = Rank | Match | Promotion
 
 
+@dataclass
+class RanksStrategy:
+    count: int
+
+
+@dataclass
+class PromosStrategy:
+    pass
+
+
+@dataclass
+class PlayerStrategy:
+    id: int
+    count: int
+
+
+Strategy = RanksStrategy | PromosStrategy | PlayerStrategy
+
+
 class Elo:
     def __init__(self, players: list[Player], strategy: Strategy):
         self.players: list[Player] = players
@@ -145,11 +146,30 @@ class Elo:
     def get_id(self, index: int):
         return self.players[index].id
 
+    def get_init_elo(self, index: int) -> int:
+        return self.players[index].elo
+
+    def get_init_rank(self, index: int) -> Rank:
+        return self.players[index].rank
+
+    def get_data(self, index: int) -> Data:
+        return self.current_data[index]
+
     def get_elo(self, index: int):
         return self.current_data[index].elo
 
     def get_rank(self, index: int) -> Rank:
         return self.current_data[index].rank
+
+    def set_elo(self, index: int, value: int):
+        id = self.get_id(index)
+        self.current_data[index].elo = value
+        self.result[id] = self.current_data[index]
+
+    def set_rank(self, index: int, value: Rank):
+        id = self.get_id(index)
+        self.current_data[index].rank = value
+        self.result[id] = self.current_data[index]
 
     def get_stronger(self, player_id: int, possible_players: list[int]) -> int | None:
         candidates = [
@@ -206,14 +226,77 @@ class Elo:
                     assert opponent
                     self.actions.append(Match(player1=player, player2=opponent))
 
+    def generate_promos(self):
+        for rank in Rank:
+            if rank == Rank.UNRANKED:
+                continue
+
+            current_rank_players = [
+                id for id, player in enumerate(self.players) if player.rank == rank
+            ]
+
+            prev_rank = rank.get_prev()
+            prev_rank_players = [
+                id for id, player in enumerate(self.players) if player.rank == prev_rank
+            ]
+
+            prev_rank_players.sort(key=lambda x: self.get_elo(x), reverse=True)
+
+            if len(current_rank_players) < rank.max():
+                self.actions.append(rank)
+                while prev_rank_players:
+                    index = prev_rank_players.pop()
+
+                    if len(current_rank_players) < rank.max():
+                        current_rank_players.append(index)
+                        self.set_rank(index, rank)
+                        self.actions.append(Promotion(index, prev_rank, rank))
+            else:
+                if not prev_rank_players:
+                    continue
+                self.actions.append(rank)
+                current_rank_players.sort(key=lambda x: self.get_elo(x), reverse=False)
+                current_worst = current_rank_players.pop()
+                prev_best = prev_rank_players.pop()
+                self.actions.append(
+                    Match(
+                        player1=current_worst,
+                        player2=prev_best,
+                    )
+                )
+
+    def get_index_from_id(self, id: int) -> int | None:
+        for index, player in enumerate(self.players):
+            if player.id == id:
+                return index
+        return None
+
+    def generate_player(self, player_id: int, games_count: int) -> None:
+        player_index = self.get_index_from_id(player_id)
+        if player_index is not None:
+            players = [
+                id
+                for id, player in enumerate(self.players)
+                if player.elo == self.get_elo(player_index)
+            ]
+
+            random.shuffle(players)
+
+            length = min(games_count, len(players))
+
+            for i in range(length):
+                self.actions.append(Match(player_index, players[i]))
+        else:
+            assert None
+
     def generate(self):
         match self.strategy:
             case RanksStrategy():
                 self.generate_rank(self.strategy.count)
             case PromosStrategy():
-                assert False
+                self.generate_promos()
             case PlayerStrategy():
-                assert False
+                self.generate_player(self.strategy.id, self.strategy.count)
 
     def next(self) -> Action | None:
         if self.position == len(self.actions):
@@ -225,16 +308,6 @@ class Elo:
             self.position += 1
 
         return action
-
-    def set_elo(self, index: int, value: int):
-        id = self.get_id(index)
-        self.current_data[index].elo = value
-        self.result[id] = self.current_data[index]
-
-    def set_rank(self, index: int, value: Rank):
-        id = self.get_id(index)
-        self.current_data[index].rank = value
-        self.result[id] = self.current_data[index]
 
     def get_action(self):
         return self.actions[self.position]
@@ -305,4 +378,5 @@ class Elo:
                         f"{self.players[action.player1]} vs {self.players[action.player2]}"
                     )
                 case Promotion():
-                    assert False
+                    p = self.players[action.player];
+                    print(f"{p} from {action.from_rank} to {action.to_rank}");

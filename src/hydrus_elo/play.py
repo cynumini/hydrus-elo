@@ -1,6 +1,7 @@
 import logging
 from typing import override
 
+# import pudb
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QImage, QPixmap, QResizeEvent, Qt
 from PySide6.QtWidgets import (
@@ -207,7 +208,11 @@ class Play(QMainWindow):
                     self.logger.info(self.action.name)
                     self.action = self.elo.next()
                 case Promotion():
-                    assert False
+                    self.logger.info(
+                        f"{self.elo.get_id(self.action.player)} from {self.action.from_rank} to "
+                        + f"{self.action.to_rank}"
+                    )
+                    self.action = self.elo.next()
         else:
             print(self.elo.result)
             _ = self.close()
@@ -275,7 +280,12 @@ class Play(QMainWindow):
                 unranked_ids = self.hydrus.search_files(tags)
                 ids.extend(unranked_ids)
             case PlayerStrategy():
-                assert False
+                need_to_add = True
+                for id in ids:
+                    if strategy.id == id:
+                        need_to_add = False
+                if need_to_add:
+                    ids.append(strategy.id)
 
         self.logger.info("Unranked files = %d", len(ids) - ranked_ids_len)
 
@@ -315,5 +325,9 @@ class Play(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         if self.image_thread:
             self.image_thread.stop()
+            print("test1")
             _ = self.image_thread.wait()
+            print("test2")
+        print("test3")
         event.accept()
+        print("test4")
